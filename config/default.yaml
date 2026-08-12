@@ -1,0 +1,9 @@
+database: data/orchestrator.db
+workspace_root: .
+default_executor: simulated
+kilo_model: kilo/cohere/north-mini-code:free
+max_output_bytes: 20000
+security:
+  require_worktree: false
+  allow_auto_approval: false
+  bind_host: 127.0.0.1

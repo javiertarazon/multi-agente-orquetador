@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-agente-orquestado"
+version = "0.1.0"
+description = "Orquestador local para Kilo, Cline y clientes MCP"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.7,<3",
+  "typer>=0.12,<1",
+]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.111,<1", "uvicorn>=0.30,<1"]
+mcp = ["mcp>=1.0,<2"]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.23,<1", "ruff>=0.5,<1"]
+
+[project.scripts]
+maoq = "orchestrator.interfaces.cli.app:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100

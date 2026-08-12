@@ -1,0 +1,44 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "MAOQ: Diagnostico",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\maoq.exe",
+      "args": ["doctor"],
+      "problemMatcher": []
+    },
+    {
+      "label": "MAOQ: Worker una tarea",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\maoq.exe",
+      "args": ["worker", "--once"],
+      "problemMatcher": []
+    },
+    {
+      "label": "MAOQ: Pruebas",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "pytest", "-q"],
+      "problemMatcher": ["$pytest"],
+      "group": "test"
+    },
+    {
+      "label": "MAOQ: API HTTP",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "uvicorn", "orchestrator.interfaces.api.app:app", "--host", "127.0.0.1", "--port", "8765"],
+      "options": {"env": {"PYTHONPATH": "${workspaceFolder}\\src"}},
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "MAOQ: Servidor MCP",
+      "type": "process",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "orchestrator.interfaces.mcp.server"],
+      "options": {"env": {"PYTHONPATH": "${workspaceFolder}\\src"}},
+      "problemMatcher": []
+    }
+  ]
+}
