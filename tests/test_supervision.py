@@ -24,6 +24,27 @@ def test_failed_validation_is_retried_and_notified(tmp_path):
     assert any(item.event == "task_failed" for item in store.notifications(task.id))
 
 
+def test_retry_wait_executes_the_configured_retry(tmp_path, monkeypatch):
+    store = TaskStore(str(tmp_path / "tasks.db"))
+    task = store.add(Task(prompt="retry once", executor=ExecutorType.KILO,
+                          max_retries=1, backoff_base=0))
+    calls = []
+
+    class FailingThenSuccessfulExecutor:
+        def run(self, current_task):
+            calls.append(current_task.retry_count)
+            status = TaskStatus.FAILED if len(calls) == 1 else TaskStatus.SUCCEEDED
+            return TaskResult(task_id=current_task.id, status=status, summary="attempt")
+
+    monkeypatch.setattr("orchestrator.application.worker.executor_for",
+                        lambda _: FailingThenSuccessfulExecutor())
+    assert Worker(store).run_once() == 1
+    assert store.get(task.id).status == TaskStatus.RETRY_WAIT
+    assert Worker(store).run_once() == 1
+    assert calls == [0, 1]
+    assert store.get(task.id).status == TaskStatus.AWAITING_APPROVAL
+
+
 def test_success_generates_completion_notification(tmp_path):
     store = TaskStore(str(tmp_path / "tasks.db"))
     task = store.add(Task(prompt="ok", executor=ExecutorType.SIMULATED,

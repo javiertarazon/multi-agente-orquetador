@@ -33,7 +33,9 @@ class Worker:
             task.status = TaskStatus.QUEUED
             self.store.update_result(task_result(task, TaskStatus.QUEUED, "Dependencias pendientes"))
             return 0
-        if task.retry_count >= task.max_retries and task.max_retries > 0:
+        # retry_count counts retries after the initial execution, so the retry
+        # limit is checked only after an attempt has actually run.
+        if task.retry_count > task.max_retries and task.max_retries > 0:
             result = task_result(task, TaskStatus.FAILED,
                                  "La tarea alcanzo el maximo de reintentos antes de ejecutarse")
             self.store.update_result(result)
