@@ -45,6 +45,19 @@ def test_retry_wait_executes_the_configured_retry(tmp_path, monkeypatch):
     assert store.get(task.id).status == TaskStatus.AWAITING_APPROVAL
 
 
+def test_validation_runs_in_task_workspace(tmp_path):
+    store = TaskStore(str(tmp_path / "tasks.db"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = store.add(Task(prompt="validate workspace", workspace=str(workspace),
+                          executor=ExecutorType.SIMULATED,
+                          validation_commands=[["python", "-c",
+                                                "from pathlib import Path; Path('marker.txt').write_text('ok')"]]))
+    assert Worker(store).run_once() == 0
+    assert (workspace / "marker.txt").read_text() == "ok"
+    assert store.get(task.id).status == TaskStatus.SUCCEEDED
+
+
 def test_success_generates_completion_notification(tmp_path):
     store = TaskStore(str(tmp_path / "tasks.db"))
     task = store.add(Task(prompt="ok", executor=ExecutorType.SIMULATED,
