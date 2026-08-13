@@ -22,14 +22,14 @@ la configuracion de Cline. Si no hay autenticacion, el executor conserva el erro
 del CLI y marca la tarea como `failed`; no intenta automatizar la UI.
 
 ## Copilot
-Copilot es el planner y reviewer: crea planes compactos por MCP, pregunta al usuario si desea delegarlos, y solo despues llama a `execute_plan`. Asigna cada tarea a Kilo o Cline, inspecciona resumen/validaciones y usa `review_task` con feedback para aprobar o pedir una nueva iteracion. No se asume una API publica para controlar sus sesiones desde Python; el MCP es el contrato estable.
+Copilot es el planner y reviewer: crea planes compactos por MCP, pregunta al usuario una sola vez si desea delegarlos, y solo despues llama a `execute_plan`. Las tareas con `approval_policy=auto_on_pass` avanzan autonomamente cuando las validaciones y el auto-review pasan; `manual`, `always` y los hitos `milestone` usan `review_task`. No se asume una API publica para controlar sus sesiones desde Python; el MCP es el contrato estable.
 
 Flujo obligatorio en modo Plan:
 1. Copilot prepara el plan y lo muestra al usuario.
 2. Copilot pregunta: `El plan esta listo. ¿Quieres ejecutarlo con multi agente orquestado usando Kilo y Cline?`
 3. Solo con una respuesta afirmativa llama a `execute_plan`.
-4. Copilot consulta resultados, artefactos y validaciones.
-5. Si falla, rechaza con feedback y crea una iteracion corregida.
+4. El supervisor consulta resultados, artefactos y validaciones y aplica backoff/reintentos con memoria de fallos.
+5. Copilot interviene solo si una tarea o hito requiere revision humana, o si el plan termina fallido.
 6. Si pasa, informa el resultado y solicita confirmacion antes de cualquier nueva fase sensible.
 
 ## Bucle de mejora y tokens

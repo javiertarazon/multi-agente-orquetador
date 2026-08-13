@@ -34,6 +34,11 @@ Consulta `docs/ARCHITECTURE.md` y `docs/AGENT_INTEGRATION.md`.
 ## Capacidades actuales
 
 - Planes de tareas con dependencias, prioridades, reintentos y políticas de revisión.
+- Learning loop con memoria persistida de intentos, fallos y correcciones.
+- Escaneo de artefactos con hashes SHA-256 y control de `allowed_paths`.
+- Auto-revisión con políticas `auto_on_pass`, `manual` y `milestone`.
+- GoalTree por plan, supervisores aislados y backoff de reintentos.
+- Recuperación de tareas sin heartbeat mediante `maoq task recover`.
 - Ejecución mediante Kilo, Cline o un ejecutor simulado para pruebas.
 - Validación automática mediante comandos declarados por tarea.
 - Persistencia SQLite y notificaciones de inicio, reintento, fallo y finalización.
@@ -65,7 +70,7 @@ estado, las validaciones y la trazabilidad del plan.
 ## Arranque MCP
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
+maoq worker --once
 python -m pip install -e ".[mcp]"
 python -m orchestrator.interfaces.mcp.server
 ```
@@ -74,6 +79,8 @@ El servidor usa transporte MCP `stdio`, adecuado para clientes locales como
 Copilot, Kilo y Cline. Para ejecución local del worker:
 
 ```powershell
+Consulta `docs/AUTONOMY_V2.md` y `docs/CHANGELOG_AUTONOMY_V2.md` para las
+funciones nuevas, correcciones y límites conocidos.
 maoq worker --once
 ```
 

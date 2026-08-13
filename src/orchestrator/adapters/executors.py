@@ -34,10 +34,11 @@ class SubprocessExecutor(Executor):
     def run(self, task: Task) -> TaskResult:
         started = time.monotonic()
         command = [*self.command, *self.auto_flag, task.prompt]
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         try:
             completed = subprocess.run(command, cwd=task.workspace, text=True,
                 capture_output=True, encoding="utf-8", errors="replace",
-                timeout=task.timeout_seconds, check=False)
+                timeout=task.timeout_seconds, check=False, creationflags=creationflags)
             status = TaskStatus.SUCCEEDED if completed.returncode == 0 else TaskStatus.FAILED
             return TaskResult(task_id=task.id, status=status, exit_code=completed.returncode,
                 summary=f"{self.kind.value} finalizo con codigo {completed.returncode}",
@@ -81,10 +82,11 @@ class ClineExecutor(SubprocessExecutor):
             )
         started = time.monotonic()
         command = [*self.command, *self.auto_flag, "--cwd", task.workspace, task.prompt]
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         try:
             completed = subprocess.run(command, cwd=task.workspace, text=True,
                 capture_output=True, encoding="utf-8", errors="replace",
-                timeout=task.timeout_seconds, check=False)
+            timeout=task.timeout_seconds, check=False, creationflags=creationflags)
             status = TaskStatus.SUCCEEDED if completed.returncode == 0 else TaskStatus.FAILED
             return TaskResult(task_id=task.id, status=status, exit_code=completed.returncode,
                 summary=f"cline finalizo con codigo {completed.returncode}",

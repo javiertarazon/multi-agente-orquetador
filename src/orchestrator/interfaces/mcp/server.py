@@ -4,6 +4,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from orchestrator.adapters.storage import TaskStore
+from orchestrator.application.goal_engine import GoalEngine
 from orchestrator.application.worker import Worker
 from orchestrator.domain.models import ExecutorType, Task
 
@@ -15,7 +16,7 @@ except ImportError as error:
 mcp = FastMCP("multi-agente-orquestado")
 store = TaskStore()
 _supervisor_lock = threading.Lock()
-_supervisor_thread: threading.Thread | None = None
+_supervisor_threads: dict[str, threading.Thread] = {}
 _plan_stores: dict[str, TaskStore] = {}
 
 
@@ -68,6 +69,7 @@ def create_plan(plan: str, tasks: list[dict], workspace: str = ".", auto_execute
         return {"error": "plan y tasks son obligatorios"}
     plan_id = uuid4().hex
     plan_store = _isolated_store(plan_id)
+    goal = GoalEngine(plan_store).create_root(plan_id, plan, [])
     created: list[Task] = []
     for index, item in enumerate(tasks):
         dependency_ids = [created[int(value)].id for value in item.get("depends_on", [])]
@@ -80,8 +82,17 @@ def create_plan(plan: str, tasks: list[dict], workspace: str = ".", auto_execute
             validation_commands=list(item.get("validation_commands", [])),
             depends_on=dependency_ids,
             max_retries=int(item.get("max_retries", 0)),
+            retry_count=0,
+            timeout_seconds=max(1, int(item.get("timeout_seconds", 900))),
+            dry_run=bool(item.get("dry_run", False)),
+            approval_policy=item.get("approval_policy", "auto_on_pass"),
             requires_review=bool(item.get("requires_review", True)),
             reviewer=str(item.get("reviewer", "copilot")),
+            plan_id=plan_id,
+            model=item.get("model"),
+            backoff_base=float(item.get("backoff_base", 2.0)),
+            goal_id=goal.id,
+            tags=list(item.get("tags", [])),
             metadata={"plan": plan, "plan_index": index,
                       "role": str(item.get("role", "executor")),
                       "plan_id": plan_id, "target_return": target_return,
@@ -89,6 +100,7 @@ def create_plan(plan: str, tasks: list[dict], workspace: str = ".", auto_execute
                       "iteration": 0},
         )
         plan_store.add(task)
+        GoalEngine(plan_store).attach_task(goal.id, task.id)
         created.append(task)
     if auto_execute:
         _start_supervisor([task.id for task in created], plan_store)
@@ -120,24 +132,29 @@ def execute_plan(plan_task_ids: list[str], approved_by: str = "copilot") -> dict
 
 def _start_supervisor(task_ids: list[str], plan_store: TaskStore) -> None:
     """Mantiene un supervisor por proceso MCP para el plan solicitado."""
-    global _supervisor_thread
+    plan_id = str(plan_store.get(task_ids[0]).plan_id or plan_store.get(task_ids[0]).metadata.get("plan_id", "global"))
     with _supervisor_lock:
-        if _supervisor_thread and _supervisor_thread.is_alive():
+        existing = _supervisor_threads.get(plan_id)
+        if existing and existing.is_alive():
             return
-        _supervisor_thread = threading.Thread(
-            target=_run_plan, args=(list(task_ids), plan_store), name="maoq-supervisor", daemon=True
+        thread = threading.Thread(
+            target=_run_plan, args=(list(task_ids), plan_store), name=f"maoq-supervisor-{plan_id}", daemon=True
         )
-        _supervisor_thread.start()
+        _supervisor_threads[plan_id] = thread
+        thread.start()
 
 
 def _run_plan(task_ids: list[str], plan_store: TaskStore) -> None:
     """Supervisa dependencias, ejecuciones y revisiones hasta cerrar el plan."""
     worker = Worker(plan_store)
     while True:
-        tasks = [store.get(task_id) for task_id in task_ids]
-        if all(task and task.status.value in {"succeeded", "failed", "cancelled"} for task in tasks):
+        tasks = [plan_store.get(task_id) for task_id in task_ids]
+        if all(task and task.status.value in {"succeeded", "failed", "rejected", "cancelled"} for task in tasks):
             return
         worker.run_once()
+        plan_id = tasks[0].plan_id if tasks and tasks[0] else None
+        if plan_id:
+            GoalEngine(plan_store).refresh(plan_id)
         time.sleep(0.5)
 
 
@@ -206,7 +223,9 @@ def get_plan_status(plan_id: str) -> dict:
             "target_return": metadata.get("target_return"),
             "max_drawdown": metadata.get("max_drawdown"),
             "max_iterations": metadata.get("max_iterations"),
-            "iteration": metadata.get("iteration", 0)}
+            "iteration": metadata.get("iteration", 0),
+            "supervisor_alive": bool(_supervisor_threads.get(plan_id) and _supervisor_threads[plan_id].is_alive()),
+            "goals": [goal.model_dump(mode="json") for goal in plan_store.goals(plan_id)]}
 
 
 @mcp.tool()

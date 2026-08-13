@@ -69,6 +69,12 @@ def cancel(task_id: str) -> None:
     typer.echo("cancelled" if store().cancel(task_id) else "not found or already finished")
 
 
+@task_app.command("recover")
+def recover(max_age_seconds: int = 300) -> None:
+    """Recupera tareas running sin heartbeat y aplica su backoff."""
+    typer.echo({"recovered": store().recover_stale_running(max_age_seconds)})
+
+
 @app.command()
 def report() -> None:
     tasks = store().list()
@@ -99,6 +105,16 @@ def delegate(plan_file: Path) -> None:
         raise typer.BadParameter("No existe el archivo del plan")
     typer.echo(f"Plan listo para delegar: {plan_file}")
     typer.echo("Usa Copilot y responde 'Si' a la pregunta de delegacion para activar el MCP.")
+
+
+@plan_app.command("status")
+def plan_status(plan_id: str) -> None:
+    database = Path("data") / "plans" / f"{plan_id}.db"
+    plan_store = TaskStore(str(database))
+    counts: dict[str, int] = {}
+    for task in plan_store.list(limit=1000):
+        counts[task.status.value] = counts.get(task.status.value, 0) + 1
+    typer.echo({"plan_id": plan_id, "by_status": counts, "goals": [goal.model_dump(mode="json") for goal in plan_store.goals(plan_id)]})
 
 
 @app.command()

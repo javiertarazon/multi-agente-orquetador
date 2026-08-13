@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from orchestrator.adapters.executors import executor_for
 from orchestrator.adapters.storage import TaskStore
-from orchestrator.domain.models import TaskStatus
-from orchestrator.domain.models import Notification, TaskResult
+from orchestrator.application.artifact_scanner import ArtifactScanner
+from orchestrator.application.auto_reviewer import AutoReviewer
+from orchestrator.application.learning_engine import LearningEngine
+from orchestrator.domain.models import ApprovalPolicy, Notification, TaskAttempt, TaskResult, TaskStatus
 import subprocess
 import time
 from orchestrator.application.security import validate_task
@@ -12,8 +14,11 @@ from orchestrator.application.security import validate_task
 class Worker:
     def __init__(self, store: TaskStore) -> None:
         self.store = store
+        self.reviewer = AutoReviewer()
+        self.learner = LearningEngine(store)
 
     def run_once(self) -> int:
+        self.store.recover_stale_running()
         task = self.store.claim_next()
         if not task:
             return 0
@@ -28,17 +33,40 @@ class Worker:
             task.status = TaskStatus.QUEUED
             self.store.update_result(task_result(task, TaskStatus.QUEUED, "Dependencias pendientes"))
             return 0
+        if task.retry_count >= task.max_retries and task.max_retries > 0:
+            result = task_result(task, TaskStatus.FAILED,
+                                 "La tarea alcanzo el maximo de reintentos antes de ejecutarse")
+            self.store.update_result(result)
+            self.store.add_notification(Notification(task_id=task.id, event="task_failed",
+                                                      level="error", message=result.summary))
+            return 1
+        scanner = ArtifactScanner(task)
+        scanner.capture_baseline()
+        attempt = self.store.add_attempt(TaskAttempt(task_id=task.id, attempt_number=task.retry_count + 1,
+                                                      plan_id=task.plan_id, executor=task.executor,
+                                                      model_used=task.model, prompt=task.prompt))
         result = executor_for(task.executor).run(task)
         result = evaluate_result(task, result)
-        if result.status == TaskStatus.SUCCEEDED and task.requires_review and task.executor.value != "simulated":
+        artifacts = scanner.scan()
+        result.changed_files = [artifact.path for artifact in artifacts]
+        for artifact in artifacts:
+            self.store.add_artifact(artifact)
+        result.attempt_id = attempt.id
+        self.store.finish_attempt(attempt.id, result, self.learner.classify(result) if result.status != TaskStatus.SUCCEEDED else None)
+        decision = self.reviewer.review(task, result, artifacts)
+        result.auto_review_score = decision.score
+        if result.status == TaskStatus.SUCCEEDED and decision.verdict == "needs_human":
             result.status = TaskStatus.AWAITING_APPROVAL
             result.review_status = "pending"
             result.summary = f"{result.summary}; pendiente de revision de {task.reviewer}"
+        elif result.status == TaskStatus.SUCCEEDED and decision.verdict == "rejected":
+            result.status = TaskStatus.REJECTED
+            result.summary = decision.reason
         if result.status == TaskStatus.FAILED and task.retry_count < task.max_retries:
             task.retry_count += 1
-            self.store.requeue(task)
-            self.store.add_notification(Notification(task_id=task.id, event="task_retry",
-                                                      level="warning", message=f"Evaluacion fallida; reintento {task.retry_count}/{task.max_retries}"))
+            task.prompt = f"{task.prompt}\n\nContexto de reintento: {self.learner.retry_context(task, result)}"
+            self.learner.record_failure(task, result)
+            self.store.schedule_retry(task, f"{decision.reason}; intento {task.retry_count}/{task.max_retries}")
         else:
             self.store.update_result(result)
             event = "task_completed" if result.status == TaskStatus.SUCCEEDED else "task_failed"
