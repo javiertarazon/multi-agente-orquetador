@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from typing import ClassVar
 
 from orchestrator.adapters.storage import TaskStore
 from orchestrator.domain.models import Episode, Task, TaskResult
@@ -9,7 +10,7 @@ from orchestrator.domain.models import Episode, Task, TaskResult
 class LearningEngine:
     """Convierte fallos repetibles en contexto breve para el siguiente intento."""
 
-    _patterns = {
+    _patterns: ClassVar[dict[str, tuple[str, ...]]] = {
         "timeout": (r"timeout", r"timed out", r"deadline", r"\b124\b"),
         "syntax_error": (r"syntaxerror", r"parseerror", r"invalid syntax"),
         "dependency_failure": (r"modulenotfounderror", r"importerror", r"no module named"),

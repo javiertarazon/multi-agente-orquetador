@@ -1,10 +1,19 @@
-from pathlib import Path
 import json
-import sqlite3
 import os
-from datetime import datetime, timezone, timedelta
+import sqlite3
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
-from orchestrator.domain.models import Artifact, Episode, Goal, Notification, Task, TaskAttempt, TaskResult, TaskStatus
+from orchestrator.domain.models import (
+    Artifact,
+    Episode,
+    Goal,
+    Notification,
+    Task,
+    TaskAttempt,
+    TaskResult,
+    TaskStatus,
+)
 
 
 class TaskStore:
@@ -39,8 +48,7 @@ class TaskStore:
         return task
 
     def list(self, status: TaskStatus | None = None, offset: int = 0, limit: int = 50) -> list[Task]:
-        if offset < 0:
-            offset = 0
+        offset = max(offset, 0)
         if limit <= 0:
             limit = 50
         elif limit > 1000:
@@ -79,7 +87,7 @@ class TaskStore:
         if not task:
             raise KeyError(result.task_id)
         task.status = result.status
-        task.updated_at = datetime.now(timezone.utc)
+        task.updated_at = datetime.now(UTC)
         with self._connect() as connection:
             connection.execute("UPDATE tasks SET status = ?, payload = ?, result = ? WHERE id = ?",
                 (result.status.value, task.model_dump_json(), json.dumps(result.model_dump(mode="json")), task.id))
@@ -113,13 +121,13 @@ class TaskStore:
                 return None
             task = Task.model_validate_json(row["payload"])
             task.status = TaskStatus.RUNNING
-            task.updated_at = datetime.now(timezone.utc)
+            task.updated_at = datetime.now(UTC)
             connection.execute("UPDATE tasks SET status = ?, payload = ? WHERE id = ?", (task.status.value, task.model_dump_json(), task.id))
             return task
 
     def promote_due_retries(self) -> list[str]:
         """Mueve reintentos cuyo backoff ya vencio a la cola ejecutable."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         promoted: list[str] = []
         for task in self.list(status=TaskStatus.RETRY_WAIT, limit=1000):
             if task.scheduled_at and task.scheduled_at > now:
@@ -135,12 +143,12 @@ class TaskStore:
 
     def recover_stale_running(self, max_age_seconds: int = 300) -> list[str]:
         """Reencola tareas cuyo worker desaparecio sin guardar resultado."""
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(1, max_age_seconds))
+        cutoff = datetime.now(UTC) - timedelta(seconds=max(1, max_age_seconds))
         recovered: list[str] = []
         for task in self.list(status=TaskStatus.RUNNING, limit=1000):
             updated = task.updated_at
             if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=timezone.utc)
+                updated = updated.replace(tzinfo=UTC)
             if updated >= cutoff:
                 continue
             if task.retry_count < task.max_retries:
@@ -148,7 +156,7 @@ class TaskStore:
                 self.schedule_retry(task, "Worker sin heartbeat")
             else:
                 task.status = TaskStatus.TIMED_OUT
-                task.updated_at = datetime.now(timezone.utc)
+                task.updated_at = datetime.now(UTC)
                 with self._connect() as connection:
                     connection.execute("UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
                                        (task.status.value, task.model_dump_json(), task.id))
@@ -169,15 +177,15 @@ class TaskStore:
 
     def requeue(self, task: Task) -> None:
         task.status = TaskStatus.QUEUED
-        task.updated_at = datetime.now(timezone.utc)
+        task.updated_at = datetime.now(UTC)
         with self._connect() as connection:
             connection.execute("UPDATE tasks SET status = ?, payload = ? WHERE id = ?", (task.status.value, task.model_dump_json(), task.id))
 
     def schedule_retry(self, task: Task, reason: str = "") -> None:
         delay = task.backoff_base ** max(1, task.retry_count)
         task.status = TaskStatus.RETRY_WAIT
-        task.scheduled_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
-        task.updated_at = datetime.now(timezone.utc)
+        task.scheduled_at = datetime.now(UTC) + timedelta(seconds=delay)
+        task.updated_at = datetime.now(UTC)
         with self._connect() as connection:
             connection.execute("UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
                                (task.status.value, task.model_dump_json(), task.id))
@@ -196,7 +204,7 @@ class TaskStore:
             if not row:
                 raise KeyError(attempt_id)
             attempt = TaskAttempt.model_validate_json(row["payload"])
-            attempt.completed_at = datetime.now(timezone.utc)
+            attempt.completed_at = datetime.now(UTC)
             attempt.heartbeat_at = attempt.completed_at
             attempt.result = result
             attempt.error_category = error_category
@@ -208,7 +216,7 @@ class TaskStore:
             if not row:
                 return
             attempt = TaskAttempt.model_validate_json(row["payload"])
-            attempt.heartbeat_at = datetime.now(timezone.utc)
+            attempt.heartbeat_at = datetime.now(UTC)
             connection.execute("UPDATE task_attempts SET payload = ? WHERE id = ?", (attempt.model_dump_json(), attempt_id))
 
     def attempts(self, task_id: str) -> list[TaskAttempt]:
@@ -252,8 +260,7 @@ class TaskStore:
             connection.execute("INSERT INTO artifacts VALUES (?, ?, ?)", (artifact.id, artifact.task_id, artifact.model_dump_json()))
 
     def artifacts(self, task_id: str, offset: int = 0, limit: int = 50) -> list[Artifact]:
-        if offset < 0:
-            offset = 0
+        offset = max(offset, 0)
         if limit <= 0:
             limit = 50
         elif limit > 1000:

@@ -1,6 +1,6 @@
 from orchestrator.adapters.storage import TaskStore
 from orchestrator.application.worker import Worker
-from orchestrator.domain.models import ExecutorType, TaskStatus, Task
+from orchestrator.domain.models import ExecutorType, Task, TaskStatus
 
 
 def test_simulated_task_lifecycle(tmp_path):

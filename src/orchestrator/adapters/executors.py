@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-import os
 
 from orchestrator.domain.models import ExecutorType, Task, TaskResult, TaskStatus
 
@@ -55,7 +55,9 @@ class SubprocessExecutor(Executor):
 class KiloExecutor(SubprocessExecutor):
     def __init__(self) -> None:
         executable = os.environ.get("MAOQ_KILO_BIN") or discover_kilo_binary()
-        auto_flag = ["--auto"]
+        # Kilo 7.x necesita formato JSON para no abrir el TUI cuando se usa
+        # desde un worker headless. El worker conserva stdout para auditoría.
+        auto_flag = ["--auto", "--format", "json"]
         model = os.environ.get("MAOQ_KILO_MODEL", "kilo/cohere/north-mini-code:free")
         if model:
             auto_flag.extend(["--model", model])

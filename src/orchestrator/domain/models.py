@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class TaskStatus(StrEnum):
@@ -29,6 +29,57 @@ class ExecutorType(StrEnum):
     SIMULATED = "simulated"
     KILO = "kilo"
     CLINE = "cline"
+
+
+class PlanContract(BaseModel):
+    """Contrato versionado emitido por el agente principal."""
+
+    schema_version: str = "1.0"
+    plan_id: str = Field(default_factory=lambda: uuid4().hex)
+    objective: str = Field(min_length=1)
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    workspace: str = "."
+    executor_order: list[ExecutorType] = Field(
+        default_factory=lambda: [ExecutorType.KILO, ExecutorType.CLINE, ExecutorType.SIMULATED]
+    )
+    max_iterations: int = Field(default=3, ge=1, le=100)
+    max_total_seconds: int = Field(default=3600, ge=1)
+    dry_run: bool = True
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TokenBudget(BaseModel):
+    """Límites explícitos para impedir que un loop consuma recursos sin fin."""
+
+    schema_version: str = "1.0"
+    max_prompt_tokens: int = Field(default=4000, ge=1)
+    max_output_tokens: int = Field(default=8000, ge=1)
+    max_attempts: int = Field(default=3, ge=1)
+    max_repair_attempts: int = Field(default=2, ge=0)
+
+
+class EvaluationReport(BaseModel):
+    """Evidencia compacta y serializable de una decisión del supervisor."""
+
+    schema_version: str = "1.0"
+    task_id: str
+    attempt_id: str | None = None
+    verdict: str = "uncertain"
+    passed_checks: int = 0
+    failed_checks: int = 0
+    evidence: list[str] = Field(default_factory=list)
+    failure_reason: str = ""
+    next_action: str = "escalate"
+
+
+class AgentCapabilities(BaseModel):
+    provider: str
+    version: str = "unknown"
+    supports_plan: bool = False
+    supports_execute: bool = True
+    supports_review: bool = False
+    supports_streaming: bool = False
+    free_model: bool = True
 
 
 class ApprovalPolicy(StrEnum):

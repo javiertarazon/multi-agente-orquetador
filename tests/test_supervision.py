@@ -1,14 +1,13 @@
-from orchestrator.adapters.storage import TaskStore
-from orchestrator.application.worker import Worker
-from orchestrator.domain.models import ExecutorType, Task, TaskStatus
-from orchestrator.domain.models import TaskResult
+from datetime import UTC, datetime, timedelta
+
 from orchestrator.adapters.executors import ClineExtensionExecutor
+from orchestrator.adapters.storage import TaskStore
 from orchestrator.application.artifact_scanner import ArtifactScanner
 from orchestrator.application.auto_reviewer import AutoReviewer
 from orchestrator.application.learning_engine import LearningEngine
-from orchestrator.domain.models import ApprovalPolicy, TaskResult
+from orchestrator.application.worker import Worker
+from orchestrator.domain.models import ApprovalPolicy, ExecutorType, Task, TaskResult, TaskStatus
 from orchestrator.interfaces.mcp.server import create_plan
-from datetime import datetime, timedelta, timezone
 
 
 def test_failed_validation_is_retried_and_notified(tmp_path):
@@ -96,7 +95,7 @@ def test_stale_running_task_is_recovered(tmp_path):
     store = TaskStore(str(tmp_path / "tasks.db"))
     task = store.add(Task(prompt="recover me", status=TaskStatus.RUNNING,
                           max_retries=1, backoff_base=0,
-                          updated_at=datetime.now(timezone.utc) - timedelta(minutes=10)))
+                          updated_at=datetime.now(UTC) - timedelta(minutes=10)))
     assert store.recover_stale_running(max_age_seconds=60) == [task.id]
     assert store.get(task.id).status == TaskStatus.RETRY_WAIT
     assert any(item.event == "task_recovered" for item in store.notifications(task.id))

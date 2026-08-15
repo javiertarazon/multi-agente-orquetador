@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import subprocess
+import time
+
 from orchestrator.adapters.executors import executor_for
 from orchestrator.adapters.storage import TaskStore
 from orchestrator.application.artifact_scanner import ArtifactScanner
 from orchestrator.application.auto_reviewer import AutoReviewer
 from orchestrator.application.learning_engine import LearningEngine
-from orchestrator.domain.models import ApprovalPolicy, Notification, TaskAttempt, TaskResult, TaskStatus
-import subprocess
-import time
 from orchestrator.application.security import validate_task
+from orchestrator.domain.models import (
+    Notification,
+    TaskAttempt,
+    TaskResult,
+    TaskStatus,
+)
 
 
 class Worker:

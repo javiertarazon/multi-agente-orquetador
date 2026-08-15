@@ -125,5 +125,30 @@ def worker(once: bool = typer.Option(False, "--once")) -> None:
     raise typer.Exit(Worker(store()).run_once())
 
 
+@app.command("run-until-terminal")
+def run_until_terminal(max_cycles: int = typer.Option(100, min=1, max=10000),
+                       idle_cycles: int = typer.Option(2, min=1, max=100)) -> None:
+    """Procesa tareas automáticamente hasta terminar o alcanzar un límite."""
+    task_store = store()
+    task_worker = Worker(task_store)
+    idle = 0
+    for _ in range(max_cycles):
+        code = task_worker.run_once()
+        active = [task for task in task_store.list(limit=1000)
+                  if task.status.value in {"queued", "running", "retry_wait"}]
+        if not active:
+            typer.echo("Plan terminado: no quedan tareas ejecutables")
+            return
+        # Un ciclo sin tareas ejecutables puede significar backoff o revisión;
+        # no se mantiene un busy-loop infinito en ese estado.
+        idle = idle + 1 if code == 0 and not any(
+            task.status.value == "queued" for task in active
+        ) else 0
+        if idle >= idle_cycles:
+            typer.echo("Ejecución pausada: no hay tareas listas; revise backoff o aprobación")
+            return
+    typer.echo(f"Límite alcanzado: {max_cycles} ciclos")
+
+
 if __name__ == "__main__":
     app()
