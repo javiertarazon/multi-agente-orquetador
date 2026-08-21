@@ -3,7 +3,10 @@ from orchestrator.adapters.executors import (
     KiloExecutor,
     _extract_json_text,
     _SubprocessOutcome,
+    _run_agent_process,
 )
+import sys
+import time
 from orchestrator.domain.models import ExecutorType, Task, TaskStatus
 
 
@@ -178,3 +181,16 @@ def test_extract_json_text_handles_mixed_and_invalid_lines():
 def test_extract_json_text_uses_done_text():
     payload = '{"type":"done","reason":"completed","text":"listo"}\n'
     assert _extract_json_text(payload) == "listo"
+
+
+def test_agent_process_timeout_is_bounded_on_windows():
+    started = time.monotonic()
+    outcome = _run_agent_process(
+        [sys.executable, "-c", "import time; time.sleep(5)"],
+        cwd=".",
+        timeout=0.2,
+    )
+    elapsed = time.monotonic() - started
+    assert outcome.timed_out is True
+    assert outcome.returncode != 0
+    assert elapsed < 8

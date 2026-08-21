@@ -109,7 +109,9 @@ def test_resume_plan_requeues_only_non_terminal(tmp_path, monkeypatch):
     resultado = resume_plan(plan["plan_id"])
     assert resultado["reencoladas"] == 1
     assert plan_store.get(plan["task_ids"][0]).status.value == "succeeded"
-    assert plan_store.get(plan["task_ids"][1]).status.value == "queued"
+    # resume_plan starts the supervisor immediately; the task can be queued
+    # briefly or already claimed by the worker.
+    assert plan_store.get(plan["task_ids"][1]).status.value in {"queued", "running"}
 
 
 def _fake_executor_factory(records):

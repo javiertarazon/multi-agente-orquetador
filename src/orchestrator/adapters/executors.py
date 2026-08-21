@@ -41,7 +41,7 @@ def _kill_tree(pid: int) -> None:
     try:
         subprocess.run(
             ["taskkill", "/T", "/F", "/PID", str(pid)],
-            capture_output=True, timeout=15, check=False,
+            capture_output=True, timeout=3, check=False,
         )
     except (subprocess.TimeoutExpired, OSError, ValueError):
         pass
@@ -59,10 +59,14 @@ def _run_agent_process(
     derriba el arbol completo de procesos (taskkill /T /F) antes de volver a
     comunicar, evitando quedarse esperando EOF por procesos huerfanos.
     """
-    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    creationflags = (
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    )
     try:
         proc = subprocess.Popen(
-            command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            command, cwd=cwd, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", env=env,
             creationflags=creationflags,
         )
@@ -78,8 +82,15 @@ def _run_agent_process(
     except subprocess.TimeoutExpired:
         _kill_tree(proc.pid)
         try:
-            stdout, stderr = proc.communicate(timeout=15)
+            # taskkill normally closes the complete tree. The short second
+            # bound prevents inherited pipes from turning a timeout into a
+            # second hidden hang when a child ignores termination.
+            stdout, stderr = proc.communicate(timeout=2)
         except (subprocess.TimeoutExpired, OSError, ValueError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
             stdout, stderr = "", ""
         return _SubprocessOutcome(
             stdout=stdout or "", stderr=stderr or "",
