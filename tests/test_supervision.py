@@ -82,9 +82,10 @@ def test_external_executor_waits_for_copilot_review(tmp_path, monkeypatch):
 
 def test_cline_extension_executor_uses_configured_cli(monkeypatch):
     monkeypatch.setenv("MAOQ_CLINE_BIN", "cline-test")
-    monkeypatch.setattr("orchestrator.adapters.executors.subprocess.run",
-                        lambda *args, **kwargs: type("Completed", (), {
-                            "returncode": 0, "stdout": "ok", "stderr": ""
+    monkeypatch.setattr("orchestrator.adapters.executors._run_agent_process",
+                        lambda *args, **kwargs: type("Outcome", (), {
+                            "stdout": "ok", "stderr": "", "returncode": 0,
+                            "timed_out": False, "not_found": ""
                         })())
     result = ClineExtensionExecutor().run(Task(prompt="review code", executor=ExecutorType.CLINE))
     assert result.status == TaskStatus.SUCCEEDED

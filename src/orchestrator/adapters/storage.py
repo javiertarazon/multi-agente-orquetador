@@ -39,6 +39,17 @@ class TaskStore:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database)
         connection.row_factory = sqlite3.Row
+        # A background supervisor can outlive a short-lived process that
+        # recreated the SQLite file. Keep the schema available on every
+        # connection so concurrent workers never crash on a missing table.
+        connection.executescript("""
+            CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL, priority INTEGER NOT NULL, payload TEXT NOT NULL, result TEXT);
+            CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, task_id TEXT, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, task_id TEXT, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS task_attempts (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS episodes (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, payload TEXT NOT NULL);
+        """)
         return connection
 
     def add(self, task: Task) -> Task:
@@ -116,14 +127,26 @@ class TaskStore:
         self.promote_due_retries()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute("SELECT id, payload FROM tasks WHERE status = 'queued' ORDER BY priority, rowid LIMIT 1").fetchone()
-            if not row:
-                return None
-            task = Task.model_validate_json(row["payload"])
-            task.status = TaskStatus.RUNNING
-            task.updated_at = datetime.now(UTC)
-            connection.execute("UPDATE tasks SET status = ?, payload = ? WHERE id = ?", (task.status.value, task.model_dump_json(), task.id))
-            return task
+            rows = connection.execute(
+                "SELECT id, payload FROM tasks WHERE status = 'queued' ORDER BY priority, rowid"
+            ).fetchall()
+            for row in rows:
+                task = Task.model_validate_json(row["payload"])
+                if not task.depends_on:
+                    task.status = TaskStatus.RUNNING
+                    task.updated_at = datetime.now(UTC)
+                    connection.execute("UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
+                                       (task.status.value, task.model_dump_json(), task.id))
+                    return task
+                dependencies = [connection.execute("SELECT status FROM tasks WHERE id = ?", (item,)).fetchone()
+                                for item in task.depends_on]
+                if all(dep and dep["status"] == TaskStatus.SUCCEEDED.value for dep in dependencies):
+                    task.status = TaskStatus.RUNNING
+                    task.updated_at = datetime.now(UTC)
+                    connection.execute("UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
+                                       (task.status.value, task.model_dump_json(), task.id))
+                    return task
+            return None
 
     def promote_due_retries(self) -> list[str]:
         """Mueve reintentos cuyo backoff ya vencio a la cola ejecutable."""
@@ -235,6 +258,19 @@ class TaskStore:
             rows = connection.execute("SELECT payload FROM episodes WHERE plan_id = ? ORDER BY rowid DESC LIMIT ?",
                                       (plan_id, max(1, min(limit, 100)))).fetchall()
         return [episode for row in rows if (episode := Episode.model_validate_json(row["payload"])).error_category == error_category]
+
+    def episodes(self, plan_id: str | None = None, limit: int = 50) -> list[Episode]:
+        """Devuelve episodios de aprendizaje, opcionalmente filtrados por plan."""
+        query = "SELECT payload FROM episodes"
+        parameters: tuple = ()
+        if plan_id:
+            query += " WHERE plan_id = ?"
+            parameters = (plan_id,)
+        query += " ORDER BY rowid DESC LIMIT ?"
+        parameters += (max(1, min(limit, 200)),)
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [Episode.model_validate_json(row["payload"]) for row in rows]
 
     def add_goal(self, goal: Goal) -> Goal:
         with self._connect() as connection:

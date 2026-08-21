@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 from pathlib import Path
@@ -5,6 +6,7 @@ from uuid import uuid4
 
 from orchestrator.adapters.storage import TaskStore
 from orchestrator.application.goal_engine import GoalEngine
+from orchestrator.application.learning_engine import LearningEngine
 from orchestrator.application.worker import Worker
 from orchestrator.domain.models import ExecutorType, Task
 
@@ -59,14 +61,21 @@ def create_task(prompt: str, executor: str = "simulated", workspace: str = ".") 
 @mcp.tool()
 def create_plan(plan: str, tasks: list[dict], workspace: str = ".", auto_execute: bool = False,
                 target_return: float | None = None, max_drawdown: float | None = None,
-                max_iterations: int = 3) -> dict:
+                max_iterations: int = 3, lessons_from: str | None = None) -> dict:
     """Importa un plan aprobado por Copilot y crea sus tareas ordenadas.
 
     Cada elemento puede incluir prompt, executor, priority, depends_on (indices
     de tareas anteriores), allowed_paths, validation_commands y max_retries.
+    Si `lessons_from` apunta a un plan_id anterior, sus lecciones aprendidas se
+    prependen al objetivo como bloque `LECCIONES PREVIAS`.
     """
     if not plan.strip() or not tasks:
         return {"error": "plan y tasks son obligatorios"}
+    if lessons_from:
+        lecciones = LearningEngine(_isolated_store(lessons_from)).lessons(lessons_from)
+        if lecciones:
+            bloque = "LECCIONES PREVIAS\n" + "\n".join(f"- {item}" for item in lecciones)
+            plan = f"{bloque}\n\n{plan}"
     plan_id = uuid4().hex
     plan_store = _isolated_store(plan_id)
     goal = GoalEngine(plan_store).create_root(plan_id, plan, [])
@@ -145,13 +154,20 @@ def _start_supervisor(task_ids: list[str], plan_store: TaskStore) -> None:
 
 
 def _run_plan(task_ids: list[str], plan_store: TaskStore) -> None:
-    """Supervisa dependencias, ejecuciones y revisiones hasta cerrar el plan."""
+    """Supervisa dependencias, ejecuciones y revisiones hasta cerrar el plan.
+
+    Ejecuta las tareas en paralelo con el maximo de workers permitido por la
+    configuracion (MAOQ_MAX_WORKERS). Las tareas con dependencias pendientes
+    no salen de la cola, por lo que el paralelismo nunca salta la
+    secuencialidad estrictamente necesaria.
+    """
+    max_workers = max(1, int(os.environ.get("MAOQ_MAX_WORKERS", "2")))
     worker = Worker(plan_store)
     while True:
         tasks = [plan_store.get(task_id) for task_id in task_ids]
         if all(task and task.status.value in {"succeeded", "failed", "rejected", "cancelled"} for task in tasks):
             return
-        worker.run_once()
+        worker.run_parallel(max_workers=max_workers)
         plan_id = tasks[0].plan_id if tasks and tasks[0] else None
         if plan_id:
             GoalEngine(plan_store).refresh(plan_id)
@@ -210,6 +226,49 @@ def cancel_task(task_id: str) -> dict[str, bool]:
 
 
 @mcp.tool()
+def session_summary(plan_id: str, limit: int = 5) -> dict:
+    """Resumen JSON compacto de un plan persistido para reanudar con minimo contexto.
+
+    Devuelve total por estado, tareas pendientes (id, executor y prompt truncado
+    a 120 caracteres) y las ultimas lecciones aprendidas de los episodios.
+    """
+    plan_store = _isolated_store(plan_id)
+    tasks = plan_store.list(limit=1000)
+    counts: dict[str, int] = {}
+    pendientes: list[dict] = []
+    terminal = {"succeeded", "failed", "rejected", "cancelled"}
+    for task in tasks:
+        counts[task.status.value] = counts.get(task.status.value, 0) + 1
+        if task.status.value not in terminal:
+            pendientes.append({"id": task.id, "executor": task.executor.value,
+                               "prompt": task.prompt[:120] + ("..." if len(task.prompt) > 120 else "")})
+    episodios = plan_store.episodes(plan_id=plan_id, limit=max(1, min(limit, 200)))
+    lecciones = [f"[{ep.error_category}] {(ep.error_message or '')[:120]}" for ep in episodios]
+    return {"plan_id": plan_id, "database": str(plan_store.database),
+            "total": len(tasks), "by_status": counts,
+            "pendientes": pendientes, "lecciones": lecciones}
+
+
+@mcp.tool()
+def resume_plan(plan_id: str) -> dict:
+    """Reencola las tareas no terminales de un plan persistido y reanuda su supervisor.
+
+    Util para retomar un plan tras el cierre del proceso MCP o tras fallos del
+    worker, sin perder el estado ya alcanzado.
+    """
+    plan_store = _isolated_store(plan_id)
+    terminal = {"succeeded", "failed", "rejected", "cancelled"}
+    pendientes = [task for task in plan_store.list(limit=1000) if task.status.value not in terminal]
+    for task in pendientes:
+        plan_store.requeue(task)
+    if pendientes:
+        _start_supervisor([task.id for task in pendientes], plan_store)
+    return {"plan_id": plan_id, "reencoladas": len(pendientes),
+            "task_ids": [task.id for task in pendientes],
+            "supervisor_alive": bool(_supervisor_threads.get(plan_id) and _supervisor_threads[plan_id].is_alive())}
+
+
+@mcp.tool()
 def get_plan_status(plan_id: str) -> dict:
     """Resume el progreso de un plan aislado y sus criterios de aceptación."""
     plan_store = _isolated_store(plan_id)
@@ -226,6 +285,22 @@ def get_plan_status(plan_id: str) -> dict:
             "iteration": metadata.get("iteration", 0),
             "supervisor_alive": bool(_supervisor_threads.get(plan_id) and _supervisor_threads[plan_id].is_alive()),
             "goals": [goal.model_dump(mode="json") for goal in plan_store.goals(plan_id)]}
+
+
+@mcp.tool()
+def get_episodes(plan_id: str | None = None, limit: int = 50, compact: bool = False) -> list[dict]:
+    """Memoria persistente: episodios de fallos, correcciones y metricas.
+
+    Permite al orquestador evitar repetir errores previos sin reenviar todo el
+    contexto de los intentos anteriores (ahorro de tokens).
+    """
+    task_store = _isolated_store(plan_id) if plan_id else store
+    episodes = task_store.episodes(plan_id=plan_id, limit=limit)
+    if compact:
+        return [{"id": episode.id, "plan_id": episode.plan_id, "task_id": episode.task_id,
+                 "error_category": episode.error_category,
+                 "error_message": episode.error_message[:200]} for episode in episodes]
+    return [episode.model_dump(mode="json") for episode in episodes]
 
 
 @mcp.tool()

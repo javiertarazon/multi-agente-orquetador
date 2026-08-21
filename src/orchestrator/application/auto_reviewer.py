@@ -35,6 +35,24 @@ class AutoReviewer:
             return ReviewDecision("approved", score, "Exit code, validaciones y artefactos correctos")
         return ReviewDecision("retry", score, "La ejecucion o las validaciones fallaron")
 
+    def cross_review(self, task: Task, result: TaskResult, artifacts: list[Artifact]) -> str:
+        """Segundo evaluador objetivo: detecta resultados que parecen exito sin evidencias.
+
+        - `rejected`: el resumen afirma cambios pero no hay archivos modificados.
+        - `needs_human`: el resumen es generico o vacio (no se puede verificar).
+        - `approved`: hay cambios o validaciones coherentes con el resumen.
+        """
+        summary = (result.summary or "").strip()
+        claims_changes = any(
+            word in summary.lower()
+            for word in ("implement", "añade", "anade", "crea", "modific", "change", "add", "agrega", "cambio")
+        )
+        if not result.changed_files and claims_changes:
+            return "rejected"
+        if not summary or len(summary) < 20:
+            return "needs_human"
+        return "approved"
+
     @staticmethod
     def _metrics_pass(task: Task, metrics: dict) -> bool:
         if not metrics or not all(metrics.get(key) for key in ("data_is_real", "costs_included", "out_of_sample")):

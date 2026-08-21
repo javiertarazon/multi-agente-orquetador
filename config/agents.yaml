@@ -1,0 +1,67 @@
+# Configuracion declarativa de agentes CLI (leida por adapters/config.py).
+fallback_order:
+  - kilo
+  - hermes
+  - cline
+  - simulated
+
+agents:
+  kilo:
+    role: worker
+    binary_env: MAOQ_KILO_BIN
+    binary_hint: npm global (kilo.CMD) o extension kilocode.kilo-code-*
+    capabilities:
+      - coding
+      - tests
+    notes: >
+      Worker de codigo. Invocacion headless: kilo run <prompt> --auto
+      --format json --model <provider/model>. Para NVIDIA free se usa
+      kilo/cohere/north-mini-code:free como modelo nativo (sin API key); NVIDIA queda como fallback mediante MAOQ_KILO_MODEL=nvidia/nemotron-3-super-120b-a12b y la key se inyecta como
+      NVIDIA_API_KEY (o la guardada por el propio kilo).
+  hermes:
+    role: worker
+    binary_env: MAOQ_HERMES_BIN
+    model_env: MAOQ_HERMES_MODEL
+    provider_env: MAOQ_HERMES_PROVIDER
+    binary_hint: ~/.local/bin/hermes.CMD
+    default_model: ""
+    default_provider: ""
+    capabilities:
+      - coding
+      - analysis
+    notes: >
+      Worker de codigo y analisis. Invocacion oneshot: hermes -z <prompt>; usa la config nativa de ~/.hermes
+      --provider <p> --model <m> --accept-hooks --yolo. Usa su propia config
+      (~/.hermes/config.yaml) con nvidia + modelo free. Siempre sale con
+      codigo 0 aun si el modelo falla; los errores viajan en stdout (HTTP 4xx,
+      cuota, modelo no disponible) o como salida vacia.
+  cline:
+    role: worker
+    binary_env: MAOQ_CLINE_BIN
+    model_env: MAOQ_CLINE_MODEL
+    provider_env: MAOQ_CLINE_PROVIDER
+    binary_hint: npm global (cline.CMD); la extension de VS Code no es CLI
+    default_model: anthropic/claude-sonnet-5
+    default_provider: cline
+    capabilities:
+      - coding
+    notes: >
+      Worker de codigo. Invocacion headless: cline --json --auto-approve true
+      -P <provider> -m <model> -k <key> <prompt>. El provider debe estar
+      habilitado en ~/.cline; para nvidia lee NVIDIA_API_KEY
+      (se inyecta al subproceso y via -k).
+  simulated:
+    role: worker
+    capabilities:
+      - coordination
+      - tests
+    notes: >
+      Fallback deterministico para pruebas y tareas de coordinacion. No ejecuta
+      codigo real; devuelve un resultado simulado.
+
+# Politica de seleccion de executor para una tarea sin executor explicito.
+selection:
+  strategy: first_available
+  rules:
+    - "usa simulated solo para tareas de coordinacion o pruebas"
+    - "opencode orquesta y no ejecuta trabajo de workers"

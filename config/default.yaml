@@ -1,7 +1,13 @@
 database: data/orchestrator.db
 workspace_root: .
 default_executor: simulated
+# Modelos gratuitos NVIDIA via NVIDIA NIM (fuente de verdad: config/agents.yaml).
+# La key se inyecta como NVIDIA_API_KEY (ver .env / config).
 kilo_model: kilo/cohere/north-mini-code:free
+hermes_model: ""
+hermes_provider: ""
+cline_model: anthropic/claude-sonnet-5
+cline_provider: cline
 max_output_bytes: 20000
 security:
   require_worktree: false

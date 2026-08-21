@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 from orchestrator.adapters.executors import executor_for
 from orchestrator.adapters.storage import TaskStore
@@ -17,28 +20,74 @@ from orchestrator.domain.models import (
 )
 
 
+@dataclass
+class WorkerStats:
+    processed: int = 0
+    succeeded: int = 0
+    failed: int = 0
+
+
 class Worker:
     def __init__(self, store: TaskStore) -> None:
         self.store = store
         self.reviewer = AutoReviewer()
         self.learner = LearningEngine(store)
+        self._claim_lock = threading.Lock()
 
     def run_once(self) -> int:
         self.store.recover_stale_running()
         task = self.store.claim_next()
         if not task:
             return 0
+        result = self._execute_claimed(task)
+        return 0 if result and result.status == TaskStatus.SUCCEEDED else (1 if result else 0)
+
+    def run_parallel(self, max_workers: int = 2) -> WorkerStats:
+        """Ejecuta tareas independientes en paralelo con N workers.
+
+        Cada hilo reclama atomica e independientemente una tarea lista (la
+        cola excluye las que tienen dependencias pendientes), la ejecuta y
+        guarda su resultado. Los limites del paralelismo se respetan: si el
+        plan exige secuencialidad (dependencias), estas se respetan porque
+        la tarea dependiente no sale de la cola hasta que su dependencia
+        termine con exito.
+        """
+        max_workers = max(1, int(max_workers))
+        stats = WorkerStats()
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="maoq-worker") as pool:
+            futures = [pool.submit(self._worker_loop, stats) for _ in range(max_workers)]
+            for future in futures:
+                future.result()
+        return stats
+
+    def _worker_loop(self, stats: WorkerStats) -> None:
+        """Bucle de un worker: ejecuta tareas listas hasta agotar la cola."""
+        while True:
+            task = self.store.claim_next()
+            if not task:
+                return
+            result = self._execute_claimed(task)
+            if result:
+                stats.processed += 1
+                if result.status == TaskStatus.SUCCEEDED:
+                    stats.succeeded += 1
+                elif result.status in (TaskStatus.FAILED, TaskStatus.REJECTED, TaskStatus.TIMED_OUT):
+                    stats.failed += 1
+
+    def _execute_claimed(self, task) -> TaskResult | None:
         self.store.add_notification(Notification(task_id=task.id, event="task_started",
                                                   message=f"Tarea iniciada por {task.executor.value}"))
         problems = validate_task(task)
         if problems:
-            self.store.update_result(task_result(task, TaskStatus.FAILED, "; ".join(problems)))
-            return 1
+            result = task_result(task, TaskStatus.FAILED, "; ".join(problems))
+            self.store.update_result(result)
+            return result
         if any((dependency := self.store.get_result(item)) is None or dependency.status != TaskStatus.SUCCEEDED
                for item in task.depends_on):
             task.status = TaskStatus.QUEUED
-            self.store.update_result(task_result(task, TaskStatus.QUEUED, "Dependencias pendientes"))
-            return 0
+            result = task_result(task, TaskStatus.QUEUED, "Dependencias pendientes")
+            self.store.update_result(result)
+            return result
         # retry_count counts retries after the initial execution, so the retry
         # limit is checked only after an attempt has actually run.
         if task.retry_count > task.max_retries and task.max_retries > 0:
@@ -47,7 +96,7 @@ class Worker:
             self.store.update_result(result)
             self.store.add_notification(Notification(task_id=task.id, event="task_failed",
                                                       level="error", message=result.summary))
-            return 1
+            return result
         scanner = ArtifactScanner(task)
         scanner.capture_baseline()
         attempt = self.store.add_attempt(TaskAttempt(task_id=task.id, attempt_number=task.retry_count + 1,
@@ -81,7 +130,7 @@ class Worker:
             self.store.add_notification(Notification(task_id=task.id, event=event,
                                                       level="info" if result.status == TaskStatus.SUCCEEDED else "error",
                                                       message=result.summary))
-        return 0 if result.status == TaskStatus.SUCCEEDED else 1
+        return result
 
 
 def task_result(task, status: TaskStatus, summary: str):

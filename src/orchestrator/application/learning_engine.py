@@ -38,6 +38,15 @@ class LearningEngine:
                           executor=task.executor, model_used=task.model)
         return self.store.add_episode(episode)
 
+    def lessons(self, plan_id: str, limit: int = 3) -> list[str]:
+        """Frases cortas de lecciones aprendidas para inyectar en el siguiente plan."""
+        episodes = self.store.episodes(plan_id=plan_id, limit=max(1, min(limit, 20)))
+        return [
+            f"Evita {ep.error_category} porque en el intento de {ep.executor.value} "
+            f"fallo por: {(ep.error_message or 'sin detalle')[:120]}"
+            for ep in episodes
+        ]
+
     def retry_context(self, task: Task, result: TaskResult) -> str:
         category = self.classify(result)
         plan_id = task.plan_id or str(task.metadata.get("plan_id", "global"))

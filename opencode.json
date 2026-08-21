@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "multi-agente-orquestado": {
+      "type": "local",
+      "command": ["D:/datos jt7/proyectos/agentes_autonomos/trade bot/multi agente orquestado/.venv/Scripts/python.exe", "-m", "orchestrator.interfaces.mcp.server"],
+      "cwd": ".",
+      "environment": {
+        "PYTHONPATH": "src"
+      },
+      "enabled": true,
+      "timeout": 15000
+    }
+  }
+}

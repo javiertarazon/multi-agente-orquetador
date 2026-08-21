@@ -29,6 +29,7 @@ class ExecutorType(StrEnum):
     SIMULATED = "simulated"
     KILO = "kilo"
     CLINE = "cline"
+    HERMES = "hermes"
 
 
 class PlanContract(BaseModel):
@@ -40,7 +41,12 @@ class PlanContract(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     workspace: str = "."
     executor_order: list[ExecutorType] = Field(
-        default_factory=lambda: [ExecutorType.KILO, ExecutorType.CLINE, ExecutorType.SIMULATED]
+        default_factory=lambda: [
+            ExecutorType.KILO,
+            ExecutorType.HERMES,
+            ExecutorType.CLINE,
+            ExecutorType.SIMULATED,
+        ]
     )
     max_iterations: int = Field(default=3, ge=1, le=100)
     max_total_seconds: int = Field(default=3600, ge=1)
