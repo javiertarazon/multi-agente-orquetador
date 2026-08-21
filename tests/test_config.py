@@ -12,7 +12,8 @@ def test_load_settings_reads_yaml_config(monkeypatch):
     monkeypatch.delenv("MAOQ_CLINE_PROVIDER", raising=False)
     settings = load_settings()
     assert settings.kilo_model == "kilo/cohere/north-mini-code:free"
-    assert settings.hermes_provider == ""
+    assert settings.hermes_provider == "nvidia"
+    assert settings.hermes_model == "nemotron-3-ultra-550b-a55b"
     assert settings.cline_provider == "cline"
     assert "kilo" in settings.agents
     assert settings.agents["cline"].role == "worker"

@@ -24,8 +24,8 @@ agents:
     model_env: MAOQ_HERMES_MODEL
     provider_env: MAOQ_HERMES_PROVIDER
     binary_hint: ~/.local/bin/hermes.CMD
-    default_model: ""
-    default_provider: ""
+    default_model: nemotron-3-ultra-550b-a55b
+    default_provider: nvidia
     capabilities:
       - coding
       - analysis
