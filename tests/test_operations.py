@@ -1,7 +1,7 @@
 from orchestrator.adapters.storage import TaskStore
 from orchestrator.application.security import validate_task
-from orchestrator.application.worker import Worker
-from orchestrator.domain.models import ApprovalPolicy, ExecutorType, Task, TaskStatus
+from orchestrator.application.worker import Worker, evaluate_result
+from orchestrator.domain.models import ApprovalPolicy, ExecutorType, Task, TaskResult, TaskStatus
 
 
 def test_cancel_queued_task(tmp_path):
@@ -23,3 +23,24 @@ def test_worker_respects_priority(tmp_path):
     Worker(store).run_once()
     assert store.get_result(high.id).status == TaskStatus.SUCCEEDED
     assert store.get_result(low.id) is None
+
+
+def test_validation_timeout_is_capped(monkeypatch, tmp_path):
+    captured = {}
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured.update(kwargs)
+        return Completed()
+
+    monkeypatch.setattr("orchestrator.application.worker.subprocess.run", fake_run)
+    task = Task(prompt="validate", workspace=str(tmp_path),
+                validation_commands=[["python", "check.py"]], timeout_seconds=900)
+    result = evaluate_result(task, TaskResult(task_id=task.id, status=TaskStatus.SUCCEEDED))
+
+    assert result.status == TaskStatus.SUCCEEDED
+    assert captured["timeout"] == 300

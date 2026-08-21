@@ -140,11 +140,12 @@ def task_result(task, status: TaskStatus, summary: str):
 def evaluate_result(task, result: TaskResult) -> TaskResult:
     """Ejecuta los criterios de aceptacion declarados por la tarea."""
     validations = []
+    validation_timeout = min(300, task.timeout_seconds)
     for command in task.validation_commands:
         started = time.monotonic()
         try:
             completed = subprocess.run(command, cwd=task.workspace, text=True,
-                                       capture_output=True, timeout=task.timeout_seconds, check=False)
+                                       capture_output=True, timeout=validation_timeout, check=False)
             validations.append({"command": command, "exit_code": completed.returncode,
                                 "duration_seconds": round(time.monotonic() - started, 3),
                                 "output": (completed.stdout + completed.stderr)[-2000:]})
