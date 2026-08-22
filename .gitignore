@@ -9,4 +9,8 @@ data/*.db
 data/plans/*.db
 logs/*
 worktrees/*
+workspace/
+test_*.py
+check_*.py
+test_fail.txt
 !.gitkeep

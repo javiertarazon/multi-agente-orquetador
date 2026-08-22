@@ -21,6 +21,44 @@ from orchestrator.domain.models import (
 
 
 @dataclass
+class _ValidationOutcome:
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool
+
+
+def _run_validation_process(
+    command: list[str],
+    cwd: str,
+    timeout: float = 300,
+) -> _ValidationOutcome:
+    """Ejecuta un comando de validación con timeout robusto (Windows-compatible)."""
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    try:
+        proc = subprocess.Popen(
+            command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", errors="replace", creationflags=creationflags,
+        )
+    except FileNotFoundError as error:
+        return _ValidationOutcome(exit_code=127, stdout="", stderr=str(error), timed_out=False)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return _ValidationOutcome(
+            exit_code=proc.returncode, stdout=stdout or "", stderr=stderr or "", timed_out=False,
+        )
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            stdout, stderr = proc.communicate(timeout=15)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            stdout, stderr = "", ""
+        return _ValidationOutcome(
+            exit_code=proc.returncode, stdout=stdout or "", stderr=stderr or "", timed_out=True,
+        )
+
+
+@dataclass
 class WorkerStats:
     processed: int = 0
     succeeded: int = 0
@@ -143,14 +181,13 @@ def evaluate_result(task, result: TaskResult) -> TaskResult:
     validation_timeout = min(300, task.timeout_seconds)
     for command in task.validation_commands:
         started = time.monotonic()
-        try:
-            completed = subprocess.run(command, cwd=task.workspace, text=True,
-                                       capture_output=True, timeout=validation_timeout, check=False)
-            validations.append({"command": command, "exit_code": completed.returncode,
-                                "duration_seconds": round(time.monotonic() - started, 3),
-                                "output": (completed.stdout + completed.stderr)[-2000:]})
-        except (OSError, subprocess.TimeoutExpired) as error:
-            validations.append({"command": command, "exit_code": 124, "output": str(error)})
+        outcome = _run_validation_process(command, task.workspace, timeout=validation_timeout)
+        validations.append({
+            "command": command,
+            "exit_code": outcome.exit_code,
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "output": (outcome.stdout + outcome.stderr)[-2000:],
+        })
     result.validations = validations
     failed = [item for item in validations if item["exit_code"] != 0]
     if failed:
