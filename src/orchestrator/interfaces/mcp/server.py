@@ -176,7 +176,14 @@ def _run_plan(task_ids: list[str], plan_store: TaskStore) -> None:
         tasks = [plan_store.get(task_id) for task_id in task_ids]
         if all(task and task.status.value in {"succeeded", "failed", "rejected", "cancelled"} for task in tasks):
             return
-        worker.run_parallel(max_workers=max_workers)
+        try:
+            worker.run_parallel(max_workers=max_workers)
+        except RuntimeError as error:
+            # El proceso puede estar cerrándose mientras el supervisor daemon
+            # intenta crear su pool; no debe emitir una excepción no controlada.
+            if "interpreter shutdown" in str(error).lower():
+                return
+            raise
         plan_id = tasks[0].plan_id if tasks and tasks[0] else None
         if plan_id:
             GoalEngine(plan_store).refresh(plan_id)
