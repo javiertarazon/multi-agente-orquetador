@@ -19,6 +19,7 @@ from orchestrator.domain.models import (
     TaskResult,
     TaskStatus,
 )
+from orchestrator.harness import ExecutionHarness
 
 
 @dataclass
@@ -71,6 +72,7 @@ class Worker:
         self.store = store
         self.reviewer = AutoReviewer()
         self.learner = LearningEngine(store)
+        self.harness = ExecutionHarness()
         self._claim_lock = threading.Lock()
 
     def run_once(self) -> int:
@@ -106,16 +108,8 @@ class Worker:
             task = self.store.claim_next()
             if not task:
                 return
-            try:
-                result = self._execute_claimed(task)
-            except Exception as error:  # noqa: BLE001 - el worker no puede dejar tareas running
-                result = TaskResult(
-                    task_id=task.id,
-                    status=TaskStatus.FAILED,
-                    exit_code=1,
-                    summary="El worker fallo durante la ejecucion de la tarea",
-                    stderr=f"{type(error).__name__}: {error}",
-                )
+            result = self.harness.run(task, self._execute_claimed)
+            if result.status == TaskStatus.FAILED and not self.store.get_result(task.id):
                 try:
                     self.store.update_result(result)
                 except (KeyError, OSError):
