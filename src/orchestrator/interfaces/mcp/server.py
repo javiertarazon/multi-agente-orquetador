@@ -184,6 +184,11 @@ def _run_plan(task_ids: list[str], plan_store: TaskStore) -> None:
             if "interpreter shutdown" in str(error).lower():
                 return
             raise
+        except KeyError:
+            # Un workspace/SQLite temporal puede desaparecer mientras termina
+            # una prueba o se cierra el cliente MCP; el daemon debe salir sin
+            # propagar una excepción al proceso anfitrión.
+            return
         plan_id = tasks[0].plan_id if tasks and tasks[0] else None
         if plan_id:
             GoalEngine(plan_store).refresh(plan_id)
