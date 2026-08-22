@@ -174,7 +174,7 @@ def _run_plan(task_ids: list[str], plan_store: TaskStore) -> None:
     worker = Worker(plan_store)
     while True:
         tasks = [plan_store.get(task_id) for task_id in task_ids]
-        if all(task and task.status.value in {"succeeded", "failed", "rejected", "cancelled"} for task in tasks):
+        if all(task and task.status.value in {"succeeded", "failed", "timed_out", "rejected", "cancelled"} for task in tasks):
             return
         try:
             worker.run_parallel(max_workers=max_workers)
@@ -257,7 +257,7 @@ def session_summary(plan_id: str, limit: int = 5) -> dict:
     tasks = plan_store.list(limit=1000)
     counts: dict[str, int] = {}
     pendientes: list[dict] = []
-    terminal = {"succeeded", "failed", "rejected", "cancelled"}
+    terminal = {"succeeded", "failed", "timed_out", "rejected", "cancelled"}
     for task in tasks:
         counts[task.status.value] = counts.get(task.status.value, 0) + 1
         if task.status.value not in terminal:
@@ -278,7 +278,7 @@ def resume_plan(plan_id: str) -> dict:
     worker, sin perder el estado ya alcanzado.
     """
     plan_store = _isolated_store(plan_id)
-    terminal = {"succeeded", "failed", "rejected", "cancelled"}
+    terminal = {"succeeded", "failed", "timed_out", "rejected", "cancelled"}
     pendientes = [task for task in plan_store.list(limit=1000) if task.status.value not in terminal]
     for task in pendientes:
         plan_store.requeue(task)

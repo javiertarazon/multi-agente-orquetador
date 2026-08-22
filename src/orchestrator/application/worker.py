@@ -91,6 +91,7 @@ class Worker:
         la tarea dependiente no sale de la cola hasta que su dependencia
         termine con exito.
         """
+        self.store.recover_stale_running()
         max_workers = max(1, int(max_workers))
         stats = WorkerStats()
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="maoq-worker") as pool:
@@ -105,7 +106,20 @@ class Worker:
             task = self.store.claim_next()
             if not task:
                 return
-            result = self._execute_claimed(task)
+            try:
+                result = self._execute_claimed(task)
+            except Exception as error:  # noqa: BLE001 - el worker no puede dejar tareas running
+                result = TaskResult(
+                    task_id=task.id,
+                    status=TaskStatus.FAILED,
+                    exit_code=1,
+                    summary="El worker fallo durante la ejecucion de la tarea",
+                    stderr=f"{type(error).__name__}: {error}",
+                )
+                try:
+                    self.store.update_result(result)
+                except (KeyError, OSError):
+                    return
             if result:
                 stats.processed += 1
                 if result.status == TaskStatus.SUCCEEDED:
