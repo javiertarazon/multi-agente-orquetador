@@ -39,3 +39,21 @@ def test_validation_timeout_is_capped(monkeypatch, tmp_path):
 
     assert result.status == TaskStatus.SUCCEEDED
     assert captured["timeout"] == 300
+
+
+def test_worker_activates_swarm_mode_for_swarm_tag(monkeypatch, tmp_path):
+    store = TaskStore(str(tmp_path / "swarm.db"))
+    task = store.add(Task(prompt="delegar al enjambre", executor=ExecutorType.SIMULATED,
+                          workspace=str(tmp_path), tags=["enjambre"]))
+
+    class SwarmGateway:
+        def swarm_round(self, request):
+            assert request.task.id == task.id
+            return TaskResult(task_id=task.id, status=TaskStatus.SUCCEEDED,
+                              summary="resultado del enjambre"), "cline"
+
+    monkeypatch.setattr("orchestrator.application.worker.AgentGateway", SwarmGateway)
+    assert Worker(store).run_once() == 0
+    result = store.get_result(task.id)
+    assert result.status == TaskStatus.SUCCEEDED
+    assert "agente seleccionado: cline" in result.summary

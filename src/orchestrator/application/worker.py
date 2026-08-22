@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
+from orchestrator.adapters.agent_gateway import AgentGateway, AgentRequest
 from orchestrator.adapters.executors import executor_for
 from orchestrator.adapters.storage import TaskStore
 from orchestrator.application.artifact_scanner import ArtifactScanner
@@ -140,7 +141,12 @@ class Worker:
         attempt = self.store.add_attempt(TaskAttempt(task_id=task.id, attempt_number=task.retry_count + 1,
                                                       plan_id=task.plan_id, executor=task.executor,
                                                       model_used=task.model, prompt=task.prompt))
-        result = executor_for(task.executor).run(task)
+        if any(tag.lower() in {"enjambre", "swarm", "modo_dios"} for tag in task.tags):
+            result, selected_agent = AgentGateway().swarm_round(AgentRequest(task))
+            if result.summary:
+                result.summary = f"{result.summary} [agente seleccionado: {selected_agent}]"
+        else:
+            result = executor_for(task.executor).run(task)
         result = evaluate_result(task, result)
         artifacts = scanner.scan()
         result.changed_files = [artifact.path for artifact in artifacts]
