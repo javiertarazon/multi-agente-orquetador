@@ -71,6 +71,14 @@ def create_plan(plan: str, tasks: list[dict], workspace: str = ".", auto_execute
     """
     if not plan.strip() or not tasks:
         return {"error": "plan y tasks son obligatorios"}
+    if os.environ.get("MAOQ_REQUIRE_REAL_EXECUTORS") == "1":
+        simulated = [index for index, item in enumerate(tasks)
+                     if item.get("executor", "simulated") == "simulated"
+                     and not any(str(tag).lower() in {"smoke", "smoke_test", "coordination"}
+                                 for tag in item.get("tags", []))]
+        if simulated:
+            return {"error": "OpenCode debe delegar en Kilo, Cline o Hermes; "
+                    f"tareas simulated rechazadas: {simulated}"}
     if lessons_from:
         lecciones = LearningEngine(_isolated_store(lessons_from)).lessons(lessons_from)
         if lecciones:
@@ -81,7 +89,8 @@ def create_plan(plan: str, tasks: list[dict], workspace: str = ".", auto_execute
     goal = GoalEngine(plan_store).create_root(plan_id, plan, [])
     created: list[Task] = []
     for index, item in enumerate(tasks):
-        dependency_ids = [created[int(value)].id for value in item.get("depends_on", [])]
+        depends_on = item.get("depends_on", [])
+        dependency_ids = [created[int(value)].id for value in depends_on]
         task = Task(
             prompt=str(item["prompt"]),
             executor=ExecutorType(item.get("executor", "simulated")),
