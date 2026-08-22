@@ -16,6 +16,22 @@ from orchestrator.domain.models import (
 )
 
 
+class _ManagedConnection(sqlite3.Connection):
+    """Close SQLite connections when a ``with`` block finishes.
+
+    ``sqlite3.Connection`` commits/rolls back in ``__exit__`` but does not
+    close itself.  The store uses short-lived connections, so leaving them to
+    the garbage collector produces ResourceWarning on Python 3.13+ and can
+    exhaust handles during long-running supervisor loops.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 class TaskStore:
     def __init__(self, database: str = "data/orchestrator.db") -> None:
         default_database = "data/orchestrator.db"
@@ -37,7 +53,7 @@ class TaskStore:
             connection.execute("CREATE INDEX IF NOT EXISTS idx_goals_plan ON goals(plan_id)")
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database)
+        connection = sqlite3.connect(self.database, factory=_ManagedConnection)
         connection.row_factory = sqlite3.Row
         # A background supervisor can outlive a short-lived process that
         # recreated the SQLite file. Keep the schema available on every

@@ -25,6 +25,7 @@ maoq = "orchestrator.interfaces.cli.app:app"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "-p no:asyncio -p no:cacheprovider"
 
 [tool.ruff]
 line-length = 100

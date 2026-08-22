@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+from typing import Any
 from pathlib import Path
 from uuid import uuid4
 
@@ -12,6 +13,15 @@ from orchestrator.domain.models import ExecutorType, Task
 
 try:
     from mcp.server.fastmcp import FastMCP
+    # MCP 1.26.x leaves Settings.lifespan as an incomplete forward reference
+    # when used with Pydantic 2.13+, which emits a warning at FastMCP startup.
+    # Resolve the vendor model before constructing the server so production
+    # runs and strict warning tests are both clean.
+    from mcp.server.fastmcp.server import Settings as FastMCPSettings
+    FastMCPSettings.model_rebuild(
+        _types_namespace={"LifespanResultT": Any, "FastMCP": FastMCP},
+        force=True,
+    )
 except ImportError as error:
     raise RuntimeError("Instala el extra [mcp] para usar el servidor MCP") from error
 
