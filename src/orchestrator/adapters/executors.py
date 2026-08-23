@@ -119,9 +119,10 @@ class SubprocessExecutor(Executor):
         if outcome.timed_out:
             return TaskResult(task_id=task.id, status=TaskStatus.FAILED, exit_code=124,
                 summary="La tarea excedio el timeout", stderr="timeout")
-        status = TaskStatus.SUCCEEDED if outcome.returncode == 0 else TaskStatus.FAILED
-        return TaskResult(task_id=task.id, status=status, exit_code=outcome.returncode,
-            summary=f"{self.kind.value} finalizo con codigo {outcome.returncode}",
+        return_code = int(outcome.returncode) if outcome.returncode is not None else 1
+        status = TaskStatus.SUCCEEDED if return_code == 0 else TaskStatus.FAILED
+        return TaskResult(task_id=task.id, status=status, exit_code=return_code,
+            summary=f"{self.kind.value} finalizo con codigo {return_code}",
             stdout=outcome.stdout[-20000:], stderr=outcome.stderr[-20000:],
             duration_seconds=round(time.monotonic() - started, 3))
 
@@ -198,14 +199,15 @@ class KiloExecutor(Executor):
                 summary="La tarea Kilo excedio el timeout", stderr="timeout")
         stdout = outcome.stdout
         text = _extract_json_text(stdout)
-        failed = outcome.returncode != 0 or not text
+        return_code = int(outcome.returncode) if outcome.returncode is not None else 1
+        failed = return_code != 0 or not text
         if failed:
             status = TaskStatus.FAILED
-            summary = "kilo devolvio una respuesta vacia" if not text else f"kilo finalizo con codigo {outcome.returncode}"
+            summary = "kilo devolvio una respuesta vacia" if not text else f"kilo finalizo con codigo {return_code}"
         else:
             status = TaskStatus.SUCCEEDED
             summary = text[:2000]
-        return TaskResult(task_id=task.id, status=status, exit_code=outcome.returncode,
+        return TaskResult(task_id=task.id, status=status, exit_code=return_code,
             summary=summary, stdout=stdout[-20000:], stderr=outcome.stderr[-20000:],
             duration_seconds=round(time.monotonic() - started, 3))
 
@@ -228,6 +230,8 @@ class ClineExecutor(Executor):
         self.model_env = os.environ.get("GOOGLE_GENERATIVE_AI_API_KEY") or os.environ.get("GEMINI_API_KEY") or ""
         self.openrouter_env = os.environ.get("OPENROUTER_API_KEY") or ""
         self.nvidia_env = os.environ.get("NVIDIA_API_KEY") or ""
+        self.fallback_model = os.environ.get("MAOQ_CLINE_FALLBACK_MODEL") or settings.cline_fallback_model
+        self.fallback_provider = os.environ.get("MAOQ_CLINE_FALLBACK_PROVIDER") or settings.cline_fallback_provider
 
     def _build_command(self, task: Task) -> list[str]:
         command = [self.executable, "--json", "--auto-approve", "true"]
@@ -255,6 +259,18 @@ class ClineExecutor(Executor):
         _inject_key(env, "NVIDIA_API_KEY")
         outcome = _run_agent_process(command, task.workspace, env=env,
                                      timeout=task.timeout_seconds)
+        # Cline's free native route is preferred. If it is unavailable (quota,
+        # 404 or provider outage), retry once with the configured NVIDIA route.
+        if (outcome.returncode not in (0, None) and self.fallback_provider
+                and self.fallback_provider != self.provider and self.nvidia_env):
+            original_provider, original_model = self.provider, self.model
+            self.provider, self.model = self.fallback_provider, self.fallback_model
+            try:
+                fallback_command = self._build_command(task)
+                outcome = _run_agent_process(fallback_command, task.workspace, env=env,
+                                             timeout=task.timeout_seconds)
+            finally:
+                self.provider, self.model = original_provider, original_model
         if outcome.not_found:
             return TaskResult(task_id=task.id, status=TaskStatus.FAILED, exit_code=127,
                 summary=f"Ejecutable no encontrado: {self.executable}", stderr=outcome.not_found)
@@ -263,13 +279,13 @@ class ClineExecutor(Executor):
                 summary="La tarea Cline excedio el timeout", stderr="timeout")
         stdout = outcome.stdout
         text = _extract_json_text(stdout)
-        failed = outcome.returncode != 0
-        if outcome.returncode == 0 and not text:
+        return_code = int(outcome.returncode) if outcome.returncode is not None else 1
+        failed = return_code != 0
+        if return_code == 0 and not text:
             text = stdout[-4000:]
         status = TaskStatus.SUCCEEDED if not failed else TaskStatus.FAILED
-        summary = text[:2000] if not failed else (
-            f"cline finalizo con codigo {outcome.returncode}")
-        return TaskResult(task_id=task.id, status=status, exit_code=outcome.returncode,
+        summary = text[:2000] if not failed else f"cline finalizo con codigo {return_code}"
+        return TaskResult(task_id=task.id, status=status, exit_code=return_code,
             summary=summary, stdout=stdout[-20000:], stderr=outcome.stderr[-20000:],
             duration_seconds=round(time.monotonic() - started, 3))
 
@@ -383,10 +399,11 @@ class HermesExecutor(Executor):
                 failed = False
                 summary = "hermes finalizo mediante fallback NVIDIA"
         status = TaskStatus.FAILED if failed else TaskStatus.SUCCEEDED
+        return_code = int(outcome.returncode) if outcome.returncode is not None else 1
         return TaskResult(
             task_id=task.id,
             status=status,
-            exit_code=outcome.returncode,
+            exit_code=return_code,
             summary=summary,
             stdout=stdout[-20000:],
             stderr=stderr[-20000:],

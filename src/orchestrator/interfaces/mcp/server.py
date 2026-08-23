@@ -6,10 +6,11 @@ from pathlib import Path
 from uuid import uuid4
 
 from orchestrator.adapters.storage import TaskStore
+from orchestrator.adapters.config import load_settings
 from orchestrator.application.goal_engine import GoalEngine
 from orchestrator.application.learning_engine import LearningEngine
 from orchestrator.application.worker import Worker
-from orchestrator.domain.models import ExecutorType, Task
+from orchestrator.domain.models import ExecutorType, Notification, Task
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -181,13 +182,14 @@ def _run_plan(task_ids: list[str], plan_store: TaskStore) -> None:
     secuencialidad estrictamente necesaria.
     """
     max_workers = max(1, int(os.environ.get("MAOQ_MAX_WORKERS", "2")))
+    interval = max(1.0, load_settings().supervision_interval_seconds)
     worker = Worker(plan_store)
     while True:
         tasks = [plan_store.get(task_id) for task_id in task_ids]
         if all(task and task.status.value in {"succeeded", "failed", "timed_out", "rejected", "cancelled"} for task in tasks):
             return
         try:
-            worker.run_parallel(max_workers=max_workers)
+            stats = worker.run_parallel(max_workers=max_workers)
         except RuntimeError as error:
             # El proceso puede estar cerrándose mientras el supervisor daemon
             # intenta crear su pool; no debe emitir una excepción no controlada.
@@ -202,7 +204,21 @@ def _run_plan(task_ids: list[str], plan_store: TaskStore) -> None:
         plan_id = tasks[0].plan_id if tasks and tasks[0] else None
         if plan_id:
             GoalEngine(plan_store).refresh(plan_id)
-        time.sleep(0.5)
+        # Do not add latency while work is flowing. Once the ready queue is
+        # empty, poll at the configured interval and publish an actionable
+        # snapshot so OpenCode can see owner, status and remaining work.
+        if stats.processed == 0:
+            for task in tasks:
+                if task and task.status.value not in {"succeeded", "failed", "timed_out", "rejected", "cancelled"}:
+                    plan_store.add_notification(Notification(
+                        task_id=task.id,
+                        event="supervisor_progress",
+                        message=f"supervision: {task.status.value}; agente={task.executor.value}; "
+                                f"dependencias={len(task.depends_on)}; reintento={task.retry_count}/{task.max_retries}",
+                    ))
+            time.sleep(interval)
+        else:
+            time.sleep(0.1)
 
 
 @mcp.tool()

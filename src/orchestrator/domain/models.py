@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 def utc_now() -> datetime:
@@ -142,6 +142,12 @@ class TaskResult(BaseModel):
     auto_review_score: float | None = None
     financial_metrics: dict[str, Any] | None = None
     completed_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("exit_code", mode="before")
+    @classmethod
+    def _coerce_exit_code(cls, value: Any) -> Any:
+        """Tolera exit_code=None (procesos matados por taskkill devuelven None en Windows)."""
+        return 0 if value is None else int(value)
 
 
 class TaskAttempt(BaseModel):

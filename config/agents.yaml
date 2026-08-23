@@ -41,15 +41,16 @@ agents:
     model_env: MAOQ_CLINE_MODEL
     provider_env: MAOQ_CLINE_PROVIDER
     binary_hint: npm global (cline.CMD); la extension de VS Code no es CLI
-    default_model: anthropic/claude-sonnet-5
-    default_provider: cline
+    default_model: poolside/laguna-s-2.1:free
+    default_provider: openrouter
     capabilities:
       - coding
     notes: >
       Worker de codigo. Invocacion headless: cline --json --auto-approve true
       -P <provider> -m <model> -k <key> <prompt>. El provider debe estar
-      habilitado en ~/.cline; para nvidia lee NVIDIA_API_KEY
-      (se inyecta al subproceso y via -k).
+      habilitado en ~/.cline. Primera opcion: OpenRouter con
+      poolside/laguna-s-2.1:free y OPENROUTER_API_KEY. Si falla, el adaptador
+      reintenta automaticamente con NVIDIA y NVIDIA_API_KEY.
   simulated:
     role: worker
     capabilities:

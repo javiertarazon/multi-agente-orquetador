@@ -31,8 +31,11 @@ class Settings:
     kilo_model: str = "kilo/cohere/north-mini-code:free"
     hermes_model: str = ""
     hermes_provider: str = ""
-    cline_model: str = "anthropic/claude-sonnet-5"
-    cline_provider: str = "cline"
+    cline_model: str = "poolside/laguna-s-2.1:free"
+    cline_provider: str = "openrouter"
+    cline_fallback_model: str = "nvidia/nemotron-3-super-120b-a12b"
+    cline_fallback_provider: str = "nvidia"
+    supervision_interval_seconds: float = 300.0
     max_output_bytes: int = 20000
     fallback_order: list[str] = field(
         default_factory=lambda: ["kilo", "hermes", "cline", "simulated"]
@@ -83,11 +86,23 @@ def load_settings() -> Settings:
             "MAOQ_HERMES_PROVIDER", str(default.get("hermes_provider", ""))
         ),
         cline_model=os.environ.get(
-            "MAOQ_CLINE_MODEL", str(default.get("cline_model", "anthropic/claude-sonnet-5"))
+            "MAOQ_CLINE_MODEL", str(default.get("cline_model", "poolside/laguna-s-2.1:free"))
         ),
         cline_provider=os.environ.get(
-            "MAOQ_CLINE_PROVIDER", str(default.get("cline_provider", "cline"))
+            "MAOQ_CLINE_PROVIDER", str(default.get("cline_provider", "openrouter"))
         ),
+        cline_fallback_model=os.environ.get(
+            "MAOQ_CLINE_FALLBACK_MODEL",
+            str(default.get("cline_fallback_model", "nvidia/nemotron-3-super-120b-a12b")),
+        ),
+        cline_fallback_provider=os.environ.get(
+            "MAOQ_CLINE_FALLBACK_PROVIDER",
+            str(default.get("cline_fallback_provider", "nvidia")),
+        ),
+        supervision_interval_seconds=float(os.environ.get(
+            "MAOQ_SUPERVISION_INTERVAL_SECONDS",
+            default.get("supervision_interval_seconds", 300),
+        )),
         max_output_bytes=int(default.get("max_output_bytes", 20000)),
         fallback_order=list(agents_raw.get("fallback_order") or default.get("fallback_order")
                             or ["kilo", "hermes", "cline", "simulated"]),

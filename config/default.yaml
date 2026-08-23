@@ -6,8 +6,12 @@ default_executor: simulated
 kilo_model: kilo/cohere/north-mini-code:free
 hermes_model: nvidia/nemotron-3-ultra-550b-a55b
 hermes_provider: nvidia
-cline_model: anthropic/claude-sonnet-5
-cline_provider: cline
+# Primera opcion gratuita de Cline mediante OpenRouter; NVIDIA es fallback.
+cline_model: poolside/laguna-s-2.1:free
+cline_provider: openrouter
+cline_fallback_model: nvidia/nemotron-3-super-120b-a12b
+cline_fallback_provider: nvidia
+supervision_interval_seconds: 300
 max_output_bytes: 20000
 security:
   require_worktree: false

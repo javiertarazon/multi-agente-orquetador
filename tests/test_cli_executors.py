@@ -103,9 +103,9 @@ def test_cline_build_command_uses_native_provider_model(monkeypatch):
     assert command[1] == "--json"
     assert "--auto-approve" in command
     assert "-P" in command
-    assert command[command.index("-P") + 1] == "cline"
+    assert command[command.index("-P") + 1] == "openrouter"
     assert "-m" in command
-    assert command[command.index("-m") + 1] == "anthropic/claude-sonnet-5"
+    assert command[command.index("-m") + 1] == "poolside/laguna-s-2.1:free"
     assert "-k" not in command
 
 

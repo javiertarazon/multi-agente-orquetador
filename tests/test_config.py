@@ -14,7 +14,8 @@ def test_load_settings_reads_yaml_config(monkeypatch):
     assert settings.kilo_model == "kilo/cohere/north-mini-code:free"
     assert settings.hermes_provider == "nvidia"
     assert settings.hermes_model == "nvidia/nemotron-3-ultra-550b-a55b"
-    assert settings.cline_provider == "cline"
+    assert settings.cline_provider == "openrouter"
+    assert settings.cline_model == "poolside/laguna-s-2.1:free"
     assert "kilo" in settings.agents
     assert settings.agents["cline"].role == "worker"
 
