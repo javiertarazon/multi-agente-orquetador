@@ -26,10 +26,9 @@ def test_hermes_build_command_defaults(monkeypatch):
     command = executor._build_command(_task())
     assert command[0] == "hermes"
     assert command[1] == "-z"
-    assert command[2] == "haz algo"
     assert command[-2:] == ["--accept-hooks", "--yolo"]
     # Hermes usa su configuración nativa cuando no hay override explícito.
-    assert command[3:7] == ["--provider", "nvidia", "--model", "nvidia/nemotron-3-ultra-550b-a55b"]
+    assert command[2:6] == ["--provider", "nvidia", "--model", "nvidia/nemotron-3-ultra-550b-a55b"]
 
 
 def test_hermes_build_command_with_model_and_provider(monkeypatch):

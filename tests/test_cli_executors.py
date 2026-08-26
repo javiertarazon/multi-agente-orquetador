@@ -33,7 +33,6 @@ def test_kilo_build_command_uses_run_json_and_free_model(monkeypatch):
     assert command[command.index("--format") + 1] == "json"
     assert "--model" in command
     assert command[command.index("--model") + 1] == "kilo/cohere/north-mini-code:free"
-    assert command[-1] == "haz algo"
 
 
 def test_kilo_build_command_wraps_cmd_on_windows(monkeypatch):

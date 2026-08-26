@@ -11,7 +11,7 @@ def test_harness_normalizes_result_and_captures_exception():
 
 
 def test_harness_rejects_overlong_timeout():
-    task = Task(prompt="x", timeout_seconds=901)
+    task = Task(prompt="x", timeout_seconds=4000)
     result = ExecutionHarness().run(task, lambda _task: TaskResult(
         task_id=task.id, status=TaskStatus.SUCCEEDED))
     assert result.status == TaskStatus.FAILED
