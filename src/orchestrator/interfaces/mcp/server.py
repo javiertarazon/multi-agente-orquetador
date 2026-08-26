@@ -1,9 +1,14 @@
+import logging
 import os
+import signal
+import sys
 import threading
 import time
 from typing import Any
 from pathlib import Path
 from uuid import uuid4
+
+logger = logging.getLogger("orchestrator.mcp.server")
 
 from orchestrator.adapters.storage import TaskStore
 from orchestrator.adapters.config import load_settings
@@ -91,6 +96,12 @@ def _find_blocked_tasks(plan_store: TaskStore) -> list[dict]:
 def health() -> dict[str, str]:
     """Comprueba el estado del orquestador."""
     return {"status": "ok"}
+
+
+@mcp.tool()
+async def ping() -> str:
+    """Lightweight health check for auto-reconnection. Always returns OK."""
+    return "pong"
 
 
 @mcp.tool()
@@ -485,5 +496,16 @@ def force_unblock_task(task_id: str, new_status: str = "queued") -> dict:
     }
 
 
+def _shutdown_handler(signum, frame):
+    logger.info("Señal %s recibida, cerrando servidor MCP...", signum)
+    sys.exit(0)
+
+
 if __name__ == "__main__":
-    mcp.run()
+    signal.signal(signal.SIGINT, _shutdown_handler)
+    signal.signal(signal.SIGTERM, _shutdown_handler)
+    try:
+        mcp.run()
+    except Exception:
+        logger.exception("Error fatal en el servidor MCP")
+        sys.exit(1)

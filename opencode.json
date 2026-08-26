@@ -6,13 +6,11 @@
     "multi-agente-orquestado": {
       "type": "local",
       "command": ["D:/datos jt7/proyectos/agentes_autonomos/trade bot/multi agente orquestado/.venv/Scripts/python.exe", "-m", "orchestrator.interfaces.mcp.server"],
-      "cwd": ".",
       "environment": {
         "PYTHONPATH": "src",
         "MAOQ_REQUIRE_REAL_EXECUTORS": "1"
       },
-      "enabled": true,
-      "timeout": 120000
+      "enabled": true
     }
   }
 }
