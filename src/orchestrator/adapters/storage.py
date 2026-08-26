@@ -16,6 +16,19 @@ from orchestrator.domain.models import (
 )
 
 
+# Estados terminales fallidos: tareas dependientes no pueden avanzar si alguna
+# dependencia esta en cualquiera de estos estados.
+_TERMINAL_FAILED = {
+    TaskStatus.FAILED.value,
+    TaskStatus.TIMED_OUT.value,
+    TaskStatus.REJECTED.value,
+    TaskStatus.CANCELLED.value,
+}
+
+# Todos los estados terminales (exitosos y fallidos).
+_TERMINAL_ALL = {TaskStatus.SUCCEEDED.value} | _TERMINAL_FAILED
+
+
 class _ManagedConnection(sqlite3.Connection):
     """Close SQLite connections when a ``with`` block finishes.
 
@@ -80,7 +93,7 @@ class TaskStore:
             limit = 50
         elif limit > 1000:
             limit = 1000
-            
+
         query = "SELECT payload FROM tasks"
         parameters: tuple[str, ...] = ()
         if status:
@@ -99,7 +112,7 @@ class TaskStore:
             return [{"id": task.id, "status": task.status.value, "executor": task.executor.value} for task in tasks]
         return [{"id": task.id, "status": task.status.value, "executor": task.executor.value,
                  "prompt": task.prompt[:200] + ("..." if len(task.prompt) > 200 else "")} for task in tasks]
-    
+
     def list_to_dict(self, status: TaskStatus | None = None, offset: int = 0, limit: int = 50, compact: bool = False) -> list[dict]:
         """Convenience method for MCP server to return tasks as dictionaries."""
         return self.list_with_summary(status=status, offset=offset, limit=limit, compact=compact)
@@ -139,7 +152,20 @@ class TaskStore:
                  json.dumps(result.model_dump(mode="json")) if result else None, task.id))
         return task
 
+    # ------------------------------------------------------------------
+    # claim_next – version corregida
+    # ------------------------------------------------------------------
+
     def claim_next(self) -> Task | None:
+        """Reclama la siguiente tarea ejecutable de la cola.
+
+        Reglas de dependencias mejoradas:
+        - Sin dependencias: se reclama directamente.
+        - Todas en ``SUCCEEDED``: se reclama (caso ideal).
+        - Alguna en estado terminal fallido y el resto en terminal:
+          la tarea se marca ``BLOCKED`` con ``blocked_reason`` en metadata.
+        - Alguna pendiente (no terminal): se salta, la tarea sigue ``QUEUED``.
+        """
         self.promote_due_retries()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -148,21 +174,181 @@ class TaskStore:
             ).fetchall()
             for row in rows:
                 task = Task.model_validate_json(row["payload"])
+
+                # Sin dependencias -> ejecutar directamente
                 if not task.depends_on:
                     task.status = TaskStatus.RUNNING
                     task.updated_at = datetime.now(UTC)
-                    connection.execute("UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
-                                       (task.status.value, task.model_dump_json(), task.id))
+                    connection.execute(
+                        "UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
+                        (task.status.value, task.model_dump_json(), task.id),
+                    )
                     return task
-                dependencies = [connection.execute("SELECT status FROM tasks WHERE id = ?", (item,)).fetchone()
-                                for item in task.depends_on]
-                if all(dep and dep["status"] == TaskStatus.SUCCEEDED.value for dep in dependencies):
+
+                # Evaluar estado de cada dependencia
+                dep_states: dict[str, str] = {}
+                for dep_id in task.depends_on:
+                    dep_row = connection.execute(
+                        "SELECT status FROM tasks WHERE id = ?", (dep_id,)
+                    ).fetchone()
+                    dep_states[dep_id] = dep_row["status"] if dep_row else "missing"
+
+                all_terminal = all(s in _TERMINAL_ALL for s in dep_states.values())
+                any_failed = any(s in _TERMINAL_FAILED for s in dep_states.values())
+
+                if all(dep_states[d] == TaskStatus.SUCCEEDED.value for d in dep_states):
+                    # Caso ideal: todas las dependencias exitosas
                     task.status = TaskStatus.RUNNING
                     task.updated_at = datetime.now(UTC)
-                    connection.execute("UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
-                                       (task.status.value, task.model_dump_json(), task.id))
+                    connection.execute(
+                        "UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
+                        (task.status.value, task.model_dump_json(), task.id),
+                    )
                     return task
+
+                if all_terminal and any_failed:
+                    # Todas terminaron pero alguna fallo -> bloquear permanentemente
+                    failed_deps = {
+                        dep_id: state
+                        for dep_id, state in dep_states.items()
+                        if state in _TERMINAL_FAILED
+                    }
+                    task.status = TaskStatus.BLOCKED
+                    task.updated_at = datetime.now(UTC)
+                    task.metadata["blocked_reason"] = (
+                        f"Dependencias en estado terminal fallido: {failed_deps}"
+                    )
+                    connection.execute(
+                        "UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
+                        (task.status.value, task.model_dump_json(), task.id),
+                    )
+                    self.add_notification(Notification(
+                        task_id=task.id,
+                        event="task_blocked",
+                        level="error",
+                        message=f"Tarea bloqueada: dependencias fallidas {list(failed_deps.keys())}",
+                    ))
+                    # No retornamos: hay otras tareas QUEUED que podrian ser reclamables
+                    continue
+
+                # Alguna dependencia aun no termina -> saltar, sigue QUEUED
+                continue
+
             return None
+
+    # ------------------------------------------------------------------
+    # Nuevos metodos para desbloqueo y limpieza
+    # ------------------------------------------------------------------
+
+    def unblock_tasks(self) -> list[str]:
+        """Busca tareas ``BLOCKED`` y las mueve a ``QUEUED`` si ahora todas
+        sus dependencias estan en ``SUCCEEDED``.
+
+        Util cuando un supervisor corrige manualmente una tarea dependiente
+        (por ejemplo, la reencola o cambia su estado a ``SUCCEEDED``).
+        """
+        now = datetime.now(UTC)
+        unblocked: list[str] = []
+        for task in self.list(status=TaskStatus.BLOCKED, limit=1000):
+            if not task.depends_on:
+                # No deberia estar bloqueada sin dependencias, pero por seguridad
+                task.status = TaskStatus.QUEUED
+                task.updated_at = now
+                task.metadata.pop("blocked_reason", None)
+                with self._connect() as connection:
+                    connection.execute(
+                        "UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
+                        (task.status.value, task.model_dump_json(), task.id),
+                    )
+                unblocked.append(task.id)
+                continue
+
+            dep_states: list[str] = []
+            with self._connect() as connection:
+                for dep_id in task.depends_on:
+                    dep_row = connection.execute(
+                        "SELECT status FROM tasks WHERE id = ?", (dep_id,)
+                    ).fetchone()
+                    dep_states.append(dep_row["status"] if dep_row else "missing")
+
+            if all(s == TaskStatus.SUCCEEDED.value for s in dep_states):
+                task.status = TaskStatus.QUEUED
+                task.updated_at = now
+                task.metadata.pop("blocked_reason", None)
+                with self._connect() as connection:
+                    connection.execute(
+                        "UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
+                        (task.status.value, task.model_dump_json(), task.id),
+                    )
+                self.add_notification(Notification(
+                    task_id=task.id,
+                    event="task_unblocked",
+                    level="info",
+                    message="Tarea desbloqueada: todas las dependencias ahora estan SUCCEEDED",
+                ))
+                unblocked.append(task.id)
+
+        return unblocked
+
+    def handle_permanently_blocked(self) -> list[str]:
+        """Detecta tareas ``BLOCKED`` cuyas dependencias estan en estado
+        terminal fallido y las marca ``CANCELLED`` con un mensaje explicativo.
+
+        Esto evita que el supervisor las procese infinitamente.  Las tareas
+        ``BLOCKED`` cuyas dependencias cambiaron a ``SUCCEEDED`` (desbloqueo
+        manual) no se cancelan.
+        """
+        now = datetime.now(UTC)
+        cancelled: list[str] = []
+        for task in self.list(status=TaskStatus.BLOCKED, limit=1000):
+            if not task.depends_on:
+                continue
+
+            dep_states: list[str] = []
+            with self._connect() as connection:
+                for dep_id in task.depends_on:
+                    dep_row = connection.execute(
+                        "SELECT status FROM tasks WHERE id = ?", (dep_id,)
+                    ).fetchone()
+                    dep_states.append(dep_row["status"] if dep_row else "missing")
+
+            any_failed = any(s in _TERMINAL_FAILED for s in dep_states)
+            if not any_failed:
+                # Las dependencias cambiaron -> el desbloqueo se encarga
+                continue
+
+            failed_deps = [
+                dep_id
+                for dep_id, state in zip(task.depends_on, dep_states)
+                if state in _TERMINAL_FAILED
+            ]
+
+            task.status = TaskStatus.CANCELLED
+            task.updated_at = now
+            task.metadata["blocked_reason"] = (
+                f"Cancelado: dependencias permanentemente fallidas {failed_deps}"
+            )
+            with self._connect() as connection:
+                connection.execute(
+                    "UPDATE tasks SET status = ?, payload = ? WHERE id = ?",
+                    (task.status.value, task.model_dump_json(), task.id),
+                )
+            self.add_notification(Notification(
+                task_id=task.id,
+                event="task_cancelled_permanently_blocked",
+                level="error",
+                message=(
+                    f"Tarea cancelada por bloqueo permanente. "
+                    f"Dependencias fallidas: {failed_deps}"
+                ),
+            ))
+            cancelled.append(task.id)
+
+        return cancelled
+
+    # ------------------------------------------------------------------
+    # Resto de metodos existentes
+    # ------------------------------------------------------------------
 
     def promote_due_retries(self) -> list[str]:
         """Mueve reintentos cuyo backoff ya vencio a la cola ejecutable."""
@@ -317,7 +503,7 @@ class TaskStore:
             limit = 50
         elif limit > 1000:
             limit = 1000
-            
+
         with self._connect() as connection:
             rows = connection.execute("SELECT payload FROM artifacts WHERE task_id = ? ORDER BY rowid ASC LIMIT ?, ?", (task_id, offset, limit)).fetchall()
         return [Artifact.model_validate_json(row["payload"]) for row in rows]

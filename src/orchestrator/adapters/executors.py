@@ -52,6 +52,7 @@ def _run_agent_process(
     cwd: str,
     env: dict[str, str] | None = None,
     timeout: float = 600,
+    stdin_text: str | None = None,
 ) -> _SubprocessOutcome:
     """Ejecuta un agente capturando salida con timeout robusto.
 
@@ -65,7 +66,7 @@ def _run_agent_process(
     )
     try:
         proc = subprocess.Popen(
-            command, cwd=cwd, stdin=subprocess.DEVNULL,
+            command, cwd=cwd, stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace", env=env,
             creationflags=creationflags,
@@ -74,7 +75,7 @@ def _run_agent_process(
         return _SubprocessOutcome(stdout="", stderr=str(error), returncode=127,
                                   timed_out=False, not_found=str(error))
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        stdout, stderr = proc.communicate(input=stdin_text, timeout=timeout)
         return _SubprocessOutcome(
             stdout=stdout or "", stderr=stderr or "",
             returncode=proc.returncode, timed_out=False,
@@ -177,7 +178,6 @@ class KiloExecutor(Executor):
         command.extend(["--auto", "--format", "json"])
         if self.model:
             command.extend(["--model", self.model])
-        command.append(task.prompt)
         if self.executable.lower().endswith((".cmd", ".bat")):
             command = ["cmd", "/c", *command]
         return command
@@ -190,7 +190,7 @@ class KiloExecutor(Executor):
         _inject_key(env, "OPENROUTER_API_KEY")
         _inject_key(env, "NVIDIA_API_KEY")
         outcome = _run_agent_process(command, task.workspace, env=env,
-                                     timeout=task.timeout_seconds)
+                                     timeout=task.timeout_seconds, stdin_text=task.prompt)
         if outcome.not_found:
             return TaskResult(task_id=task.id, status=TaskStatus.FAILED, exit_code=127,
                 summary=f"Ejecutable no encontrado: {self.executable}", stderr=outcome.not_found)
@@ -245,7 +245,6 @@ class ClineExecutor(Executor):
             command.extend(["-k", self.openrouter_env])
         elif self.provider == "nvidia" and self.nvidia_env:
             command.extend(["-k", self.nvidia_env])
-        command.extend(["--cwd", task.workspace, task.prompt])
         if self.executable.lower().endswith((".cmd", ".bat")):
             command = ["cmd", "/c", *command]
         return command
@@ -258,7 +257,7 @@ class ClineExecutor(Executor):
         _inject_key(env, "OPENROUTER_API_KEY")
         _inject_key(env, "NVIDIA_API_KEY")
         outcome = _run_agent_process(command, task.workspace, env=env,
-                                     timeout=task.timeout_seconds)
+                                     timeout=task.timeout_seconds, stdin_text=task.prompt)
         # Cline's free native route is preferred. If it is unavailable (quota,
         # 404 or provider outage), retry once with the configured NVIDIA route.
         if (outcome.returncode not in (0, None) and self.fallback_provider
@@ -268,7 +267,7 @@ class ClineExecutor(Executor):
             try:
                 fallback_command = self._build_command(task)
                 outcome = _run_agent_process(fallback_command, task.workspace, env=env,
-                                             timeout=task.timeout_seconds)
+                                             timeout=task.timeout_seconds, stdin_text=task.prompt)
             finally:
                 self.provider, self.model = original_provider, original_model
         if outcome.not_found:
@@ -307,7 +306,7 @@ class ClineExtensionExecutor(ClineExecutor):
 
     def _build_command(self, task: Task) -> list[str]:
         if getattr(self, "bridge", ""):
-            return ["cmd", "/c", self.bridge, task.prompt] if self.bridge.lower().endswith((".cmd", ".bat")) else [self.bridge, task.prompt]
+            return ["cmd", "/c", self.bridge] if self.bridge.lower().endswith((".cmd", ".bat")) else [self.bridge]
         return super()._build_command(task)
 
 
@@ -345,7 +344,7 @@ class HermesExecutor(Executor):
         self.provider = os.environ.get("MAOQ_HERMES_PROVIDER") or settings.hermes_provider
 
     def _build_command(self, task: Task) -> list[str]:
-        command = [self.executable, "-z", task.prompt]
+        command = [self.executable, "-z"]
         if self.provider:
             command.extend(["--provider", self.provider])
         if self.model:
@@ -360,7 +359,7 @@ class HermesExecutor(Executor):
     def run(self, task: Task) -> TaskResult:
         started = time.monotonic()
         command = self._build_command(task)
-        outcome = _run_agent_process(command, task.workspace, timeout=task.timeout_seconds)
+        outcome = _run_agent_process(command, task.workspace, timeout=task.timeout_seconds, stdin_text=task.prompt)
         if outcome.not_found:
             return TaskResult(task_id=task.id, status=TaskStatus.FAILED, exit_code=127,
                 summary=f"Ejecutable no encontrado: {self.executable}", stderr=outcome.not_found)
@@ -385,14 +384,14 @@ class HermesExecutor(Executor):
         # NVIDIA NIM when a key is present. This keeps native-first behavior
         # while making the worker recoverable in unattended runs.
         if failed and not self.provider and os.environ.get("NVIDIA_API_KEY"):
-            fallback = [self.executable, "-z", task.prompt,
+            fallback = [self.executable, "-z",
                         "--provider", "nvidia",
                         "--model", "nvidia/nemotron-3-super-120b-a12b",
                         "--accept-hooks", "--yolo"]
             if self.executable.lower().endswith((".cmd", ".bat")):
                 fallback = ["cmd", "/c", *fallback]
             retry = _run_agent_process(fallback, task.workspace,
-                                       env=os.environ.copy(), timeout=task.timeout_seconds)
+                                       env=os.environ.copy(), timeout=task.timeout_seconds, stdin_text=task.prompt)
             retry_output = f"{retry.stdout}\n{retry.stderr}"
             if retry.returncode == 0 and retry.stdout.strip() and not _contains_failure_signature(retry_output):
                 stdout, stderr, outcome = retry.stdout, retry.stderr, retry

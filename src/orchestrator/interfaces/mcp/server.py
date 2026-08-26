@@ -10,7 +10,7 @@ from orchestrator.adapters.config import load_settings
 from orchestrator.application.goal_engine import GoalEngine
 from orchestrator.application.learning_engine import LearningEngine
 from orchestrator.application.worker import Worker
-from orchestrator.domain.models import ExecutorType, Notification, Task
+from orchestrator.domain.models import ExecutorType, Notification, Task, TaskStatus
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -31,6 +31,9 @@ store = TaskStore()
 _supervisor_lock = threading.Lock()
 _supervisor_threads: dict[str, threading.Thread] = {}
 _plan_stores: dict[str, TaskStore] = {}
+
+_TERMINAL_STATES = {"succeeded", "failed", "timed_out", "rejected", "cancelled"}
+_FAILED_TERMINAL = {"failed", "timed_out", "rejected", "cancelled"}
 
 
 def _isolated_store(plan_id: str) -> TaskStore:
@@ -55,6 +58,35 @@ def _store_for_task(task_id: str) -> TaskStore:
     return store
 
 
+def _find_blocked_tasks(plan_store: TaskStore) -> list[dict]:
+    """Identifica tareas bloqueadas: dependen de tareas en estado terminal fallido."""
+    all_tasks = plan_store.list(limit=1000)
+    task_map = {task.id: task for task in all_tasks}
+    blocked: list[dict] = []
+    for task in all_tasks:
+        if task.status.value in _TERMINAL_STATES:
+            continue
+        failed_deps: list[dict] = []
+        for dep_id in task.depends_on:
+            dep_task = task_map.get(dep_id)
+            if dep_task and dep_task.status.value in _FAILED_TERMINAL:
+                failed_deps.append({
+                    "id": dep_task.id,
+                    "status": dep_task.status.value,
+                    "prompt": dep_task.prompt[:150] + ("..." if len(dep_task.prompt) > 150 else ""),
+                })
+        if failed_deps:
+            blocked.append({
+                "task_id": task.id,
+                "status": task.status.value,
+                "executor": task.executor.value,
+                "prompt": task.prompt[:200] + ("..." if len(task.prompt) > 200 else ""),
+                "depends_on": task.depends_on,
+                "failed_dependencies": failed_deps,
+            })
+    return blocked
+
+
 @mcp.tool()
 def health() -> dict[str, str]:
     """Comprueba el estado del orquestador."""
@@ -72,7 +104,7 @@ def create_task(prompt: str, executor: str = "simulated", workspace: str = ".") 
 @mcp.tool()
 def create_plan(plan: str, tasks: list[dict], workspace: str = ".", auto_execute: bool = False,
                 target_return: float | None = None, max_drawdown: float | None = None,
-                max_iterations: int = 3, lessons_from: str | None = None) -> dict:
+                max_iterations: int = 5, lessons_from: str | None = None) -> dict:
     """Importa un plan aprobado por Copilot y crea sus tareas ordenadas.
 
     Cada elemento puede incluir prompt, executor, priority, depends_on (indices
@@ -100,10 +132,14 @@ def create_plan(plan: str, tasks: list[dict], workspace: str = ".", auto_execute
     goal = GoalEngine(plan_store).create_root(plan_id, plan, [])
     created: list[Task] = []
     for index, item in enumerate(tasks):
+        prompt_text = str(item["prompt"])
+        if len(prompt_text) > 500:
+            print(f"[MAOQ WARN] Tarea {index}: prompt tiene {len(prompt_text)} caracteres (>500). "
+                  "Considera descomponerla en subtareas más pequeñas para mejor control y reintentos.")
         depends_on = item.get("depends_on", [])
         dependency_ids = [created[int(value)].id for value in depends_on]
         task = Task(
-            prompt=str(item["prompt"]),
+            prompt=prompt_text,
             executor=ExecutorType(item.get("executor", "simulated")),
             priority=int(item.get("priority", index + 1)),
             workspace=str(item.get("workspace", workspace)),
@@ -112,7 +148,7 @@ def create_plan(plan: str, tasks: list[dict], workspace: str = ".", auto_execute
             depends_on=dependency_ids,
             max_retries=int(item.get("max_retries", 0)),
             retry_count=0,
-            timeout_seconds=max(1, int(item.get("timeout_seconds", 900))),
+            timeout_seconds=max(1, int(item.get("timeout_seconds", 1200))),
             dry_run=bool(item.get("dry_run", False)),
             approval_policy=item.get("approval_policy", "auto_on_pass"),
             requires_review=bool(item.get("requires_review", True)),
@@ -182,11 +218,11 @@ def _run_plan(task_ids: list[str], plan_store: TaskStore) -> None:
     secuencialidad estrictamente necesaria.
     """
     max_workers = max(1, int(os.environ.get("MAOQ_MAX_WORKERS", "2")))
-    interval = max(1.0, load_settings().supervision_interval_seconds)
+    interval = min(5.0, max(1.0, load_settings().supervision_interval_seconds))
     worker = Worker(plan_store)
     while True:
         tasks = [plan_store.get(task_id) for task_id in task_ids]
-        if all(task and task.status.value in {"succeeded", "failed", "timed_out", "rejected", "cancelled"} for task in tasks):
+        if all(task and task.status.value in _TERMINAL_STATES for task in tasks):
             return
         try:
             stats = worker.run_parallel(max_workers=max_workers)
@@ -209,7 +245,7 @@ def _run_plan(task_ids: list[str], plan_store: TaskStore) -> None:
         # snapshot so OpenCode can see owner, status and remaining work.
         if stats.processed == 0:
             for task in tasks:
-                if task and task.status.value not in {"succeeded", "failed", "timed_out", "rejected", "cancelled"}:
+                if task and task.status.value not in _TERMINAL_STATES:
                     plan_store.add_notification(Notification(
                         task_id=task.id,
                         event="supervisor_progress",
@@ -283,10 +319,9 @@ def session_summary(plan_id: str, limit: int = 5) -> dict:
     tasks = plan_store.list(limit=1000)
     counts: dict[str, int] = {}
     pendientes: list[dict] = []
-    terminal = {"succeeded", "failed", "timed_out", "rejected", "cancelled"}
     for task in tasks:
         counts[task.status.value] = counts.get(task.status.value, 0) + 1
-        if task.status.value not in terminal:
+        if task.status.value not in _TERMINAL_STATES:
             pendientes.append({"id": task.id, "executor": task.executor.value,
                                "prompt": task.prompt[:120] + ("..." if len(task.prompt) > 120 else "")})
     episodios = plan_store.episodes(plan_id=plan_id, limit=max(1, min(limit, 200)))
@@ -302,17 +337,38 @@ def resume_plan(plan_id: str) -> dict:
 
     Util para retomar un plan tras el cierre del proceso MCP o tras fallos del
     worker, sin perder el estado ya alcanzado.
+
+    Antes de reencolar, verifica que no existan tareas bloqueadas por dependencias
+    fallidas. Las tareas con dependencias en estado terminal fallido son canceladas
+    automaticamente para evitar un ciclo infinito de reintentos.
     """
     plan_store = _isolated_store(plan_id)
-    terminal = {"succeeded", "failed", "timed_out", "rejected", "cancelled"}
-    pendientes = [task for task in plan_store.list(limit=1000) if task.status.value not in terminal]
+    blocked = _find_blocked_tasks(plan_store)
+    cancelled_by_blocked: list[str] = []
+    for item in blocked:
+        task = plan_store.get(item["task_id"])
+        if task and task.status.value not in _TERMINAL_STATES:
+            plan_store.cancel(task.id)
+            plan_store.add_notification(Notification(
+                task_id=task.id,
+                event="task_cancelled_blocked",
+                level="warning",
+                message=f"Tarea cancelada: dependencia fallida {[d['id'] for d in item['failed_dependencies']]}",
+            ))
+            cancelled_by_blocked.append(task.id)
+    pendientes = [task for task in plan_store.list(limit=1000) if task.status.value not in _TERMINAL_STATES]
     for task in pendientes:
         plan_store.requeue(task)
     if pendientes:
         _start_supervisor([task.id for task in pendientes], plan_store)
-    return {"plan_id": plan_id, "reencoladas": len(pendientes),
-            "task_ids": [task.id for task in pendientes],
-            "supervisor_alive": bool(_supervisor_threads.get(plan_id) and _supervisor_threads[plan_id].is_alive())}
+    return {
+        "plan_id": plan_id,
+        "reencoladas": len(pendientes),
+        "task_ids": [task.id for task in pendientes],
+        "canceladas_por_dependencias_fallidas": cancelled_by_blocked,
+        "tareas_bloqueadas_detectadas": len(blocked),
+        "supervisor_alive": bool(_supervisor_threads.get(plan_id) and _supervisor_threads[plan_id].is_alive()),
+    }
 
 
 @mcp.tool()
@@ -370,6 +426,63 @@ def claim_task() -> dict:
     """Reclama atomicamente la siguiente tarea para un worker."""
     task = store.claim_next()
     return task.model_dump(mode="json") if task else {"task": None}
+
+
+@mcp.tool()
+def get_blocked_tasks(plan_id: str) -> dict:
+    """Retorna tareas bloqueadas con detalles de sus dependencias fallidas.
+
+    Identifica tareas que estan en estado no terminal pero tienen dependencias
+    en estado fallido (failed, timed_out, rejected, cancelled), lo que impide
+    su ejecucion.
+    """
+    plan_store = _isolated_store(plan_id)
+    blocked = _find_blocked_tasks(plan_store)
+    return {
+        "plan_id": plan_id,
+        "blocked_count": len(blocked),
+        "blocked_tasks": blocked,
+    }
+
+
+@mcp.tool()
+def force_unblock_task(task_id: str, new_status: str = "queued") -> dict:
+    """Desbloquea una tarea manualmente cambiandola al estado especificado.
+
+    Permite forzar el estado de una tarea que esta bloqueada por dependencias
+    fallidas o por cualquier otra razon. Por defecto la mueve a 'queued' para
+    que el supervisor la reejecute.
+
+    Estados validos: queued, cancelled.
+    Usar 'queued' para reintentar la tarea ignorando dependencias fallidas.
+    Usar 'cancelled' para descartar la tarea permanentemente.
+    """
+    valid_statuses = {"queued", "cancelled"}
+    if new_status not in valid_statuses:
+        return {"error": f"Estado no valido. Estados permitidos: {valid_statuses}"}
+    task_store = _store_for_task(task_id)
+    task = task_store.get(task_id)
+    if not task:
+        return {"error": "Tarea no encontrada", "task_id": task_id}
+    if task.status.value in _TERMINAL_STATES:
+        return {"error": f"Tarea ya en estado terminal: {task.status.value}", "task_id": task_id}
+    old_status = task.status.value
+    if new_status == "queued":
+        task_store.requeue(task)
+    elif new_status == "cancelled":
+        task_store.cancel(task_id)
+    plan_id = task.plan_id or task.metadata.get("plan_id")
+    if plan_id and new_status == "queued":
+        pending = [t for t in _isolated_store(plan_id).list(limit=1000)
+                   if t.status.value not in _TERMINAL_STATES]
+        if pending:
+            _start_supervisor([t.id for t in pending], _isolated_store(plan_id))
+    return {
+        "task_id": task_id,
+        "old_status": old_status,
+        "new_status": new_status,
+        "plan_id": plan_id,
+    }
 
 
 if __name__ == "__main__":

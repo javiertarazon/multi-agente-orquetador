@@ -89,3 +89,66 @@ Consulta `docs/SUPERVISION.md` para el diseño de aislamiento y supervisión.
 Los proyectos que reciben trabajo son externos a esta plataforma. Por ejemplo,
 un bot trader debe vivir en su propio workspace; esta aplicación solo lo
 planifica, delega y revisa. Consulta `docs/PROJECT_BOUNDARIES.md`.
+
+## Instalación Rápida
+
+### Windows
+```batch
+scripts\setup_mcp.bat
+scripts\configure_agents.bat
+```
+
+### Linux/Mac
+```bash
+chmod +x scripts/setup_mcp.sh scripts/configure_agents.sh
+./scripts/setup_mcp.sh
+./scripts/configure_agents.sh
+```
+
+### Iniciar Servidor MCP
+```bash
+# Windows
+.venv\Scripts\activate
+python -m orchestrator.interfaces.mcp.server
+
+# Linux/Mac
+source .venv/bin/activate
+python -m orchestrator.interfaces.mcp.server
+```
+
+## Configuración de Agentes
+
+### OpenCode
+El servidor MCP se configura automáticamente en `opencode.json` del proyecto.
+
+### Kilo / Cline / Hermes
+Configura las rutas en `.env`:
+```env
+MAOQ_KILO_BIN=kilo
+MAOQ_CLINE_BIN=cline
+MAOQ_HERMES_BIN=hermes
+```
+
+### Límites de Ejecución
+| Parámetro | Default | Descripción |
+|-----------|---------|-------------|
+| `MAOQ_HARNESS_MAX_TIMEOUT` | 3600s | Timeout máximo por tarea (1 hora) |
+| `MAOQ_HARNESS_MAX_OUTPUT` | 50KB | Output máximo capturado |
+| `MAOQ_MAX_WORKERS` | 3 | Workers en paralelo |
+| `MAOQ_DEFAULT_MAX_RETRIES` | 2 | Reintentos por defecto |
+
+## Ejemplo de Uso
+
+### Crear Plan con Tareas Paralelas
+```python
+create_plan(
+    plan="Optimización ML",
+    tasks=[
+        {"prompt": "Crear script de optimización", "executor": "kilo", "depends_on": []},
+        {"prompt": "Crear script de backtest", "executor": "kilo", "depends_on": []},  # Paralela!
+        {"prompt": "Crear reporte final", "executor": "kilo", "depends_on": [0, 1]},  # Secuencial
+    ],
+    workspace="/path/to/project",
+    auto_execute=True
+)
+```

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Callable
 
@@ -8,9 +9,15 @@ from orchestrator.domain.models import Task, TaskResult, TaskStatus
 
 @dataclass(frozen=True)
 class HarnessPolicy:
-    """Límites centralizados aplicados antes de ejecutar un worker."""
+    """Límites centralizados aplicados antes de ejecutar un worker.
 
-    max_timeout_seconds: int = 900
+    El timeout máximo se incrementó a 3600 s porque las tareas complejas
+    de orquestación multi-agente (p.ej. generación de código + validación +
+    tests) pueden superar ampliamente los 900 s originales. Se puede
+    overridear con la variable de entorno MAOQ_HARNESS_MAX_TIMEOUT.
+    """
+
+    max_timeout_seconds: int = int(os.environ.get("MAOQ_HARNESS_MAX_TIMEOUT", 3600))
     max_output_bytes: int = 20000
     allow_simulated: bool = True
 

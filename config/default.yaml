@@ -11,8 +11,18 @@ cline_model: poolside/laguna-s-2.1:free
 cline_provider: openrouter
 cline_fallback_model: nvidia/nemotron-3-super-120b-a12b
 cline_fallback_provider: nvidia
-supervision_interval_seconds: 300
+supervision_interval_seconds: 10
 max_output_bytes: 20000
+
+# Execution limits
+harness_max_timeout_seconds: 3600
+harness_max_output_bytes: 50000
+
+# Parallel execution
+max_parallel_workers: 3
+
+# Retry policy
+default_max_retries: 2
 security:
   require_worktree: false
   allow_auto_approval: false
