@@ -15,14 +15,12 @@
     }
   },
   "mcp": {
-    "servers": {
-      "multi-agente-orquestado": {
-        "type": "local",
-        "command": ["${workspaceRoot}/scripts/mcp_wrapper.bat"],
-        "environment": {
-          "PYTHONPATH": "src",
-          "MAOQ_REQUIRE_REAL_EXECUTORS": "1"
-        }
+    "multi-agente-orquestado": {
+      "type": "local",
+      "command": ["${workspaceRoot}/scripts/mcp_wrapper.bat"],
+      "environment": {
+        "PYTHONPATH": "src",
+        "MAOQ_REQUIRE_REAL_EXECUTORS": "1"
       }
     }
   }
